@@ -12,6 +12,8 @@ subprocess は常にリスト形式・shell=False で実行する。
 from __future__ import annotations
 
 import enum
+import json
+import os
 import re
 import shlex
 import shutil
@@ -441,3 +443,230 @@ def stop(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise StopError(f"停止に失敗しました: {detail}")
+
+
+# ----------------------------------------------------------------------
+# 探索（起動中ツールの検出・ポートからの引き直し）
+# ----------------------------------------------------------------------
+SNAPSHOT_TIMEOUT: float = 60.0
+
+# 親をたどるときに「同じツールの起動役」とみなしてよい実行ファイル。
+# venv の python.exe はリダイレクタで子が本体、streamlit.exe などは pip のエントリポイント、
+# uv.exe は uv run の親になる。cmd.exe や bash.exe、エクスプローラはここに含めない。
+LAUNCHER_NAMES: frozenset[str] = frozenset(
+    {"python.exe", "pythonw.exe", "py.exe", "uv.exe", "streamlit.exe", "flask.exe", "uvicorn.exe"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessInfo:
+    pid: int
+    ppid: int
+    name: str
+    command_line: str
+    created_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Snapshot:
+    """ある時点のプロセス一覧と、LISTEN中のポート → PID の対応."""
+
+    processes: dict[int, ProcessInfo]
+    listeners: dict[int, frozenset[int]]
+
+
+@dataclass(frozen=True, slots=True)
+class DetectedTool:
+    """検出された未登録のツール（登録フォームの初期値に使う）."""
+
+    port: int
+    process: ProcessInfo  # 停止・登録の対象（最上位の起動役）
+    listener_pid: int     # 実際にポートを持っているPID
+    directory: str
+    name: str
+
+
+_SNAPSHOT_SCRIPT = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+    "$procs = foreach ($p in Get-CimInstance Win32_Process) { [pscustomobject]@{ "
+    "pid=$p.ProcessId; ppid=$p.ParentProcessId; name=$p.Name; cmd=$p.CommandLine; "
+    "created=$(if ($p.CreationDate) { $p.CreationDate.ToString('o') } else { $null }) } }; "
+    "$listen = foreach ($c in Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue) { "
+    "[pscustomobject]@{ port=$c.LocalPort; pid=$c.OwningProcess } }; "
+    "[pscustomobject]@{ processes=@($procs); listeners=@($listen) } | ConvertTo-Json -Depth 3 -Compress"
+)
+
+
+def parse_snapshot(text: str) -> Snapshot:
+    """PowerShell の JSON 出力を Snapshot に変換する。"""
+    try:
+        data = json.loads(text or "{}")
+    except json.JSONDecodeError as exc:
+        raise ProcessQueryError("プロセス一覧を解釈できませんでした。") from exc
+
+    processes: dict[int, ProcessInfo] = {}
+    for item in data.get("processes") or []:
+        try:
+            pid = int(item["pid"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        processes[pid] = ProcessInfo(
+            pid=pid,
+            ppid=int(item.get("ppid") or 0),
+            name=str(item.get("name") or ""),
+            command_line=str(item.get("cmd") or ""),
+            created_at=normalize_creation_date(item.get("created")),
+        )
+
+    listeners: dict[int, set[int]] = {}
+    for item in data.get("listeners") or []:
+        try:
+            port, pid = int(item["port"]), int(item["pid"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        listeners.setdefault(port, set()).add(pid)
+    return Snapshot(processes, {port: frozenset(pids) for port, pids in listeners.items()})
+
+
+def take_snapshot(*, runner: Runner = subprocess.run) -> Snapshot:
+    """現在のプロセス一覧とLISTEN中のポートを PowerShell 1回で取得する（実測 約1秒）。"""
+    return parse_snapshot(run_powershell(_SNAPSHOT_SCRIPT, runner=runner, timeout=SNAPSHOT_TIMEOUT))
+
+
+def _args(command_line: str) -> list[str]:
+    """コマンドラインから実行ファイルを除いた引数を返す。解釈できなければ空。"""
+    try:
+        return split_command(command_line)[1:]
+    except ValueError:
+        return []
+
+
+def _same_tool(parent: ProcessInfo, child: ProcessInfo) -> bool:
+    """親が子を起動しただけの「起動役」かどうか。
+
+    どちらかの引数がもう一方の末尾と一致すれば同じツールとみなす。
+    * venv のリダイレクタ: 親と子の引数が同一（実機で確認）
+    * uv run: 親 `uv run python -m streamlit run app.py` の末尾が子の引数
+    * pip のエントリポイント（streamlit.exe）: 子の引数の末尾が親の引数
+    """
+    if parent.name.lower() not in LAUNCHER_NAMES:
+        return False
+    parent_args, child_args = _args(parent.command_line), _args(child.command_line)
+    if not parent_args or not child_args:
+        return False
+    shorter, longer = sorted((parent_args, child_args), key=len)
+    return longer[len(longer) - len(shorter):] == shorter
+
+
+def ancestors(snapshot: Snapshot, pid: int) -> set[int]:
+    """pid 自身とその祖先のPID（循環に備えて一度見たPIDで止める）。"""
+    seen: set[int] = {pid}
+    current = snapshot.processes.get(pid)
+    while current is not None:
+        parent = snapshot.processes.get(current.ppid)
+        if parent is None or parent.pid in seen:
+            break
+        seen.add(parent.pid)
+        current = parent
+    return seen
+
+
+def root_process(
+    snapshot: Snapshot, pid: int, *, stop_at: set[int] | frozenset[int] = frozenset()
+) -> ProcessInfo | None:
+    """ポートを持つプロセスから親をたどり、同じツールの最上位の起動役を返す。
+
+    stop_at（TOOL NEXUS 自身とその祖先）には決して登らない。
+    """
+    current = snapshot.processes.get(pid)
+    if current is None:
+        return None
+    seen = {current.pid}
+    while True:
+        parent = snapshot.processes.get(current.ppid)
+        if (
+            parent is None
+            or parent.pid in seen
+            or parent.pid in stop_at
+            or not _same_tool(parent, current)
+        ):
+            return current
+        # 親の方が後に起動しているなら、PIDが再利用された無関係なプロセス
+        if parent.created_at and current.created_at and parent.created_at > current.created_at:
+            return current
+        seen.add(parent.pid)
+        current = parent
+
+
+def find_port_owner(
+    snapshot: Snapshot, port: int, *, own_pid: int | None = None
+) -> ProcessInfo | None:
+    """ポートでLISTENしているツールの最上位の起動役を返す。TOOL NEXUS 自身なら None。"""
+    protected = ancestors(snapshot, own_pid if own_pid is not None else os.getpid())
+    for pid in sorted(snapshot.listeners.get(int(port), frozenset())):
+        if pid in protected:
+            continue
+        owner = root_process(snapshot, pid, stop_at=protected)
+        if owner is not None and owner.pid not in protected:
+            return owner
+    return None
+
+
+def guess_directory(command_line: str) -> str:
+    """コマンドラインから作業ディレクトリを推測する（WMI では取得できないため）。
+
+    1. 実行ファイルが venv 配下（<root>/<venv>/Scripts/python.exe）なら <root>
+    2. スクリプト（.py）が絶対パスならその親
+    3. どちらも無ければ空（ユーザーに入力させる）
+    """
+    try:
+        tokens = split_command(command_line)
+    except ValueError:
+        return ""
+    if not tokens:
+        return ""
+    exe = Path(tokens[0])
+    if exe.is_absolute() and exe.parent.name.lower() == "scripts" and len(exe.parents) >= 3:
+        venv = exe.parent.parent
+        if (venv / "pyvenv.cfg").is_file() or venv.name.lower() in {".venv", "venv", "env"}:
+            return str(venv.parent)
+    for token in tokens[1:]:
+        script = Path(token)
+        if script.suffix.lower() == ".py" and script.is_absolute():
+            return str(script.parent)
+    return ""
+
+
+def detect_streamlit(
+    snapshot: Snapshot, *, exclude_ports: Iterable[int], own_pid: int | None = None
+) -> list[DetectedTool]:
+    """このPCで動いている未登録の Streamlit を列挙する。
+
+    ポートを持つ方（子）でポートを判定し、登録には最上位の起動役（親）のコマンドラインを使う。
+    TOOL NEXUS 自身と、exclude_ports（登録済み・自身のポート）は除く。
+    """
+    protected = ancestors(snapshot, own_pid if own_pid is not None else os.getpid())
+    excluded = set(exclude_ports)
+    found: list[DetectedTool] = []
+    for port in sorted(snapshot.listeners):
+        if port in excluded:
+            continue
+        for pid in sorted(snapshot.listeners[port]):
+            process = snapshot.processes.get(pid)
+            if process is None or pid in protected:
+                continue
+            if "streamlit" not in process.command_line.lower():
+                continue
+            owner = root_process(snapshot, pid, stop_at=protected) or process
+            directory = guess_directory(owner.command_line)
+            found.append(
+                DetectedTool(
+                    port=port,
+                    process=owner,
+                    listener_pid=pid,
+                    directory=directory,
+                    name=Path(directory).name if directory else f"Streamlit {port}",
+                )
+            )
+            break
+    return found
