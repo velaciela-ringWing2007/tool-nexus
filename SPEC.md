@@ -37,6 +37,9 @@ tool-nexus/
 ├─ process_utils.py      … プロセス起動・停止・探索
 ├─ health.py             … 死活監視
 ├─ port_utils.py         … 空きポートの割当
+├─ platform_ops.py       … OS依存機能の切り替え（3.2）
+├─ os_windows.py         … Windows実装
+├─ os_linux.py           … Linux実装
 ├─ launch_assist.py      … ファイル選択と起動方式の推測（6.9）
 ├─ styles.py
 ├─ constants.py
@@ -73,13 +76,51 @@ SQLiteは `data/tool_nexus.sqlite3` に作成し、Git管理対象外とする�
 `requirements.txt` は `streamlit` と `pytest` のみとする。
 
 `psutil` は**使わない**。社用PCへのパッケージ追加を避けるため、プロセス情報は
-PowerShell（`Get-CimInstance` / `Get-NetTCPConnection`）の呼び出しで取得する。
+Windowsでは PowerShell（`Get-CimInstance` / `Get-NetTCPConnection`）、Linuxでは `/proc` から取得する。
 
 ### 3.1 対象環境
 
-* Windows 11
+* Windows 11（社用PC・メイン）
+* Ubuntu（自宅の開発機）
 * ローカルPC、単一ユーザー
 * `127.0.0.1` のみで待ち受ける
+
+### 3.2 OS対応
+
+フレームワークは作らず、**OSに依存する機能だけを1枚の層で切り替える**。
+
+```text
+platform_ops.py   … 実行中のOSに応じて下のどちらかを選び、同じ関数名で公開する
+├─ os_windows.py  … PowerShell / taskkill / Windows Forms
+└─ os_linux.py    … /proc / シグナル / zenity・kdialog
+```
+
+| 機能 | Windows | Linux |
+| --- | --- | --- |
+| 起動時刻の取得・照合 | `Get-CimInstance` の `CreationDate` | `/proc/<pid>/stat` の starttime ＋ `/proc/stat` の btime |
+| プロセス一覧 | `Get-CimInstance Win32_Process` | `/proc/<pid>/{stat,cmdline,comm}` |
+| LISTEN中のポート | `Get-NetTCPConnection` | `/proc/net/tcp{,6}` の inode と `/proc/<pid>/fd` の突き合わせ |
+| 起動（切り離し） | `CREATE_NO_WINDOW` | `start_new_session=True`（新しいプロセスグループ） |
+| 子ごと停止 | `taskkill /T /F` | 子孫にSIGTERM → 猶予後に残っていればSIGKILL |
+| コマンドの分解 | `shlex`（`posix=False`）＋両端のクォート除去 | `shlex`（`posix=True`） |
+| venvのpython | `Scripts\python.exe` | `bin/python` |
+| venvが無いときのpython | `py`（無ければ `python`） | `python3` |
+| ファイル選択 | PowerShellの Windows Forms | `zenity`（無ければ `kdialog`）。どちらも無ければその旨を表示 |
+| `exe` 種別として選べるもの | `.exe` | 実行権限のあるファイル（`.py` 以外） |
+
+OSに依存しないもの（共通で使う）：PID照合（`verify_pid`）、親子の判定、検出、ヘルスチェック、
+ポート割当、起動方式の推測、DB、画面。
+
+* 両方のOS用モジュールは**どちらのOSでもimportできる**ようにする（OS専用のモジュールは関数の中でimportする）。
+  Linux の `/proc` 解析は、テストで一時ディレクトリに作った疑似 `/proc` を読ませて、Windows上でも検証する
+* Linuxの停止は、Windowsと違っていきなり強制終了せず、まずSIGTERMで終了処理の機会を与える
+* 停止前の起動時刻の照合（6.3）はLinuxでも同じく行う（PIDはLinuxでも再利用される）
+
+#### 検証
+
+* GitHub Actions で Windows と Ubuntu の両方で `pytest` を実行する
+* Ubuntu では、確認用のStreamlitを実際に起動 → ヘルスチェック → 検出 → 停止する結合テストも実行する
+  （Linuxの実機が手元に無い状態でも、OS依存部分を実プロセスで確かめるため）
 
 ---
 
@@ -717,6 +758,10 @@ LIST NEXUS（Streamlit 1.60）で計測した値。
 * 起動中ツールの検出とワンクリック登録、ポートからの引き直しによる停止
 * 種別の追加（`web` / `python`）と `{port}` の置き換え
 * ファイル選択と起動方式の推測（6.9）
+
+### Phase 3.5
+* OS依存部分の切り出し（3.2）とLinux対応
+* GitHub Actions（Windows / Ubuntu）
 
 ### Phase 4
 * 設定画面
