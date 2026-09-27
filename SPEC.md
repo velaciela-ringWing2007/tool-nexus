@@ -375,11 +375,15 @@ TOOL NEXUSの外で起動されたツールや、起動記録が消えたツー�
 | 条件 | 表示 |
 | --- | --- |
 | ヘルス通過 | 起動中 |
+| ヘルス未通過 かつ 起動後に停止した（`last_stopped_at` ≥ `last_started_at`） | 停止 |
 | ヘルス未通過 かつ `last_started_at` から30秒以内 | 起動中…（黄） |
 | ヘルス未通過 かつ 30秒超（直近に起動操作あり） | 「起動できていない可能性があります」＋ログを開く導線 |
 | ヘルス未通過 かつ 起動操作の記録が古い / 無い | 停止 |
 
 30秒を超えても「起動中…」のまま無言で回り続けることはしない。
+
+停止操作の記録（`last_stopped_at`）を見るのは、起動直後（30秒以内）に停止したときに
+「起動中…」と表示されて停止ボタンが残るのを防ぐため（実機で発覚）。
 
 #### 自動更新
 
@@ -582,6 +586,7 @@ CREATE TABLE IF NOT EXISTS tools (
     last_pid INTEGER,
     last_pid_created_at TEXT,                     -- 秒精度ISO 8601に正規化
     last_started_at TEXT,
+    last_stopped_at TEXT,                         -- 停止操作の記録（6.4）
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -593,6 +598,8 @@ CREATE TABLE IF NOT EXISTS tools (
 現在の状態は毎回ヘルスチェックで取得し、DBには設定と履歴だけを持つ。
 
 `last_pid` と `last_pid_created_at` は常に対で保存・消去する。
+
+`last_stopped_at` は後から足した列。既存のDBには起動時の移行（`database._migrate`）で `ALTER TABLE` により追加する。
 PID単体では再利用を見分けられないため、片方だけを信用しない。
 
 `port` をNULL許容にし、`health_mode` を最初から列として持つこと。
