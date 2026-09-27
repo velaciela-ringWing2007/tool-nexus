@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import socket
 from typing import Callable, Iterable
@@ -22,8 +23,16 @@ class PortError(ValueError):
 
 
 def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
-    """指定ポートに bind できるか（他のプロセスが使っていないか）を返す。"""
+    """指定ポートに bind できるか（他のプロセスが使っていないか）を返す。
+
+    Linux では、閉じた接続が TIME_WAIT で残っている間（約60秒）は素の bind() が失敗し、
+    停止直後のポートを「使用中」と誤判定する（ヘルスチェックの接続でも起きる。CI で確認）。
+    SO_REUSEADDR を付けると TIME_WAIT は無視しつつ、LISTEN 中のポートは使用中と判定できる。
+    Windows の SO_REUSEADDR は LISTEN 中のポートにまで bind できてしまうため付けない。
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, int(port)))
         except OSError:

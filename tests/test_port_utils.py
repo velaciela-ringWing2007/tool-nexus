@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 
 import pytest
 
@@ -28,6 +29,24 @@ class TestIsPortFree:
             sock.listen()
             port = sock.getsockname()[1]
             assert is_port_free(port) is False
+        assert is_port_free(port) is True
+
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="TIME_WAIT で bind が失敗するのは Linux の挙動")
+    def test_time_wait_is_free(self) -> None:
+        # サーバー側から先に閉じると、サーバー側のポートに TIME_WAIT が残る。
+        # Linux は元のソケットにも SO_REUSEADDR があるときだけ TIME_WAIT を無視して bind できる。
+        # Streamlit（uvicorn / tornado）や http.server はどれも付けているので、それに合わせる。
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen()
+        port = server.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        conn, _ = server.accept()
+        conn.close()
+        server.close()
+        client.close()
         assert is_port_free(port) is True
 
 
