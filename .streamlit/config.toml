@@ -1,0 +1,22 @@
+# ローカル専用アプリのため、127.0.0.1 のみで待ち受ける。
+# 秘密情報は保存しない（.streamlit/secrets.toml は使用しない）。
+# ポートは自動割当の範囲（既定 8500-8999）の外に置く。constants.TOOL_NEXUS_PORT と合わせること。
+[server]
+address = "127.0.0.1"
+port = 8499
+headless = true
+
+# 画面右上のツールバーを最小化する。
+# Streamlit Cloudへの「Deploy」ボタンを出さない（ローカル専用アプリのため）。
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#22d3ee"
+backgroundColor = "#070b16"
+secondaryBackgroundColor = "#0e1526"
+textColor = "#dbe6ff"

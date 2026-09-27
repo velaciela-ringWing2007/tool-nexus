@@ -1,0 +1,732 @@
+"""TOOL NEXUS - ローカルツールのランチャー（Streamlit UI）.
+
+UIはこのモジュールに閉じ込め、SQL・プロセス操作・死活監視は
+repositories / process_utils / health に委譲する。
+
+画面構造は LIST NEXUS と同じ（全幅の上部バー＋左ナビと本文の2列）。
+st.sidebar は使わない（上部バーを全幅にできなくなるため）。
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+
+from constants import (
+    APP_ICON,
+    APP_NAME,
+    DATABASE_PATH,
+    HEALTH_MODE_VALUES,
+    KIND_LABELS,
+    KIND_STREAMLIT,
+    KIND_VALUES,
+    LOG_TAIL_BYTES,
+    LOG_TAIL_LINES,
+    health_mode_label,
+    kind_label,
+)
+from database import DatabaseError
+from health import (
+    Status,
+    ToolHealth,
+    derive_status,
+    is_check_due,
+    parse_interval,
+    probe_all,
+)
+from models import Tool, ValidationError, build_tool, default_health_mode
+from port_utils import is_port_free
+from process_utils import (
+    LaunchError,
+    PidStatus,
+    ProcessNotIdentifiedError,
+    StopError,
+    launch,
+    read_log_tail,
+    resolve_log_path,
+    stop,
+)
+from repositories import DuplicatePortError, ToolRepository
+from styles import (
+    apply_styles,
+    escape_html,
+    render_app_bar,
+    render_note,
+    render_port_link,
+    render_summary,
+    render_tool_summary,
+)
+
+logger = logging.getLogger("tool_nexus")
+
+# 上部バーの種別タブ
+KIND_ALL = "all"
+KIND_TABS: dict[str, str] = {KIND_ALL: "すべて"} | KIND_LABELS
+
+# 左ナビの状態フィルター
+FILTER_ALL = "すべて"
+FILTER_RUNNING = "起動中"
+FILTER_STOPPED = "停止中"
+FILTER_ATTENTION = "要確認"
+STATUS_FILTERS: dict[str, frozenset[Status]] = {
+    FILTER_ALL: frozenset(Status),
+    FILTER_RUNNING: frozenset({Status.RUNNING, Status.STARTING}),
+    FILTER_STOPPED: frozenset({Status.STOPPED}),
+    FILTER_ATTENTION: frozenset({Status.FAILED, Status.UNKNOWN}),
+}
+
+# 一覧フラグメントの再描画の間隔。ヘルスチェック自体は設定の間隔（既定60秒）ごとにだけ行い、
+# それ以外の再描画では前回の結果を使う（health.is_check_due）。
+# 起動中…のツールがある間は毎回チェックするため、ヘルスが通れば最長でもこの間隔で表示が切り替わる。
+# run_every をその場で切り替える方式（フラグメントの外から登録し直す）は、
+# 前回の描画が消えずに残ったため採用しない（実機で確認）。
+LIST_TICK = "3s"
+
+# メッセージを表示し続ける秒数。エラーは読み逃さないよう長めにする。
+FLASH_SECONDS: dict[str, float] = {"success": 6.0, "warning": 30.0, "error": 30.0}
+
+# 停止後にポートの解放を確認する時間
+STOP_RELEASE_TIMEOUT = 5.0
+
+FORM_KEYS: dict[str, Any] = {
+    "form_name": "",
+    "form_kind": KIND_STREAMLIT,
+    "form_directory": "",
+    "form_command": "",
+    "form_port": "",
+    "form_health_mode": default_health_mode(KIND_STREAMLIT),
+    "form_log_path": "",
+    "form_autostart": False,
+    "form_description": "",
+    "form_sort_order": 0,
+}
+
+DEFAULT_STATE: dict[str, Any] = {
+    "kind_filter": KIND_ALL,
+    "status_filter": FILTER_ALL,
+    "search_query": "",
+    "dialog": None,
+    "target_id": None,
+    "health_cache": {},
+    "health_checked_at": None,
+    "health_checked_label": "",
+    "force_check": False,
+    "flash": [],
+}
+
+
+# ----------------------------------------------------------------------
+# 初期化
+# ----------------------------------------------------------------------
+def get_repository() -> ToolRepository:
+    """リポジトリを取得する。初回のみDBを初期化する。"""
+    repository = ToolRepository(DATABASE_PATH)
+    if not st.session_state.get("db_ready"):
+        repository.initialize()
+        st.session_state["db_ready"] = True
+    return repository
+
+
+def init_state() -> None:
+    for key, value in DEFAULT_STATE.items():
+        st.session_state.setdefault(key, value.copy() if isinstance(value, list) else value)
+
+
+def flash(message: str, level: str = "success") -> None:
+    """メッセージを積む。一覧は数秒ごとに再描画されるため、表示し続ける期限を持たせる。"""
+    expires_at = time.monotonic() + FLASH_SECONDS.get(level, FLASH_SECONDS["success"])
+    st.session_state["flash"].append((level, message, expires_at))
+
+
+def render_flash() -> None:
+    now = time.monotonic()
+    messages = [m for m in st.session_state.get("flash", []) if m[2] > now]
+    for level, message, _ in messages:
+        if level == "error":
+            st.error(message, icon="⛔")
+        elif level == "warning":
+            st.warning(message, icon="⚠️")
+        else:
+            st.success(message, icon="✅")
+    st.session_state["flash"] = messages
+
+
+def health_timeout(settings: dict[str, str]) -> float:
+    try:
+        return max(0.1, float(settings["health_timeout"]))
+    except (KeyError, ValueError):
+        return 2.0
+
+
+# ----------------------------------------------------------------------
+# 起動・停止
+# ----------------------------------------------------------------------
+def log_path_for(tool: Tool, settings: dict[str, str]) -> Path:
+    return resolve_log_path(
+        directory=Path(tool.directory),
+        log_path=tool.log_path,
+        default_log_dir=settings.get("default_log_dir", ""),
+        tool_id=tool.id,
+    )
+
+
+def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
+    if tool.port and not is_port_free(tool.port):
+        flash(
+            f"「{tool.name}」を起動できません。ポート {tool.port} は他のプロセスが使用中です。",
+            "error",
+        )
+        return
+    try:
+        result = launch(
+            command=tool.command,
+            kind=tool.kind,
+            port=tool.port,
+            directory=tool.directory,
+            log_path=log_path_for(tool, settings),
+        )
+    except LaunchError as exc:
+        flash(f"「{tool.name}」を起動できませんでした。{exc}", "error")
+        return
+
+    repository.record_start(int(tool.id), pid=result.pid, created_at=result.created_at)
+    if result.created_at is None:
+        flash(
+            f"「{tool.name}」を起動しましたが、プロセスの起動時刻を取得できませんでした。"
+            "安全のため、この起動は「停止」ボタンでは止められません。",
+            "warning",
+        )
+    else:
+        flash(f"「{tool.name}」を起動しました。")
+
+
+def wait_port_released(port: int, timeout: float = STOP_RELEASE_TIMEOUT) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_port_free(port):
+            return True
+        time.sleep(0.25)
+    return is_port_free(port)
+
+
+def stop_tool(repository: ToolRepository, tool: Tool) -> None:
+    try:
+        stop(tool.last_pid, tool.last_pid_created_at)
+    except ProcessNotIdentifiedError as exc:
+        if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
+            # 記録しているプロセスはもう存在しない。古い記録は消しておく。
+            repository.clear_pid(int(tool.id))
+        flash(
+            f"「{tool.name}」: 対象プロセスを特定できませんでした。停止していません。"
+            "TOOL NEXUSの外で起動されたか、既に終了している可能性があります。"
+            "動いている場合はタスクマネージャ等で停止してください。",
+            "error",
+        )
+        return
+    except StopError as exc:
+        flash(f"「{tool.name}」を停止できませんでした。{exc}", "error")
+        return
+
+    repository.clear_pid(int(tool.id))
+    if tool.port and not wait_port_released(tool.port):
+        flash(
+            f"「{tool.name}」を停止しましたが、ポート {tool.port} がまだ解放されていません。",
+            "warning",
+        )
+    else:
+        flash(f"「{tool.name}」を停止しました。")
+
+
+# ----------------------------------------------------------------------
+# ダイアログ制御
+# ----------------------------------------------------------------------
+def prime_form(tool: Tool | None = None) -> None:
+    """登録・編集フォームの初期値を session_state へ設定する（ウィジェット生成前に呼ぶ）。"""
+    values = dict(FORM_KEYS)
+    if tool is not None:
+        values.update(
+            {
+                "form_name": tool.name,
+                "form_kind": tool.kind,
+                "form_directory": tool.directory,
+                "form_command": tool.command,
+                "form_port": "" if tool.port is None else str(tool.port),
+                "form_health_mode": tool.health_mode,
+                "form_log_path": tool.log_path,
+                "form_autostart": tool.autostart,
+                "form_description": tool.description,
+                "form_sort_order": tool.sort_order,
+            }
+        )
+    for key, value in values.items():
+        st.session_state[key] = value
+    st.session_state["delete_confirmed"] = False
+
+
+def open_dialog(name: str, tool: Tool | None = None) -> None:
+    """ダイアログを開く。
+
+    一覧はフラグメント内にあり、ボタンを押してもフラグメントしか再実行されない。
+    ダイアログはアプリ全体の描画で開くため、アプリ全体を再実行する。
+    """
+    if name in ("create", "edit"):
+        prime_form(tool)
+    st.session_state["dialog"] = name
+    st.session_state["target_id"] = tool.id if tool else None
+    st.rerun(scope="app")
+
+
+def close_dialog() -> None:
+    st.session_state["dialog"] = None
+    st.session_state["target_id"] = None
+
+
+def on_kind_change() -> None:
+    """種別を変えたら死活監視モードを種別の既定値にする（exe → process）。"""
+    st.session_state["form_health_mode"] = default_health_mode(st.session_state["form_kind"])
+
+
+def render_tool_form() -> dict[str, Any]:
+    st.text_input("名前 *", key="form_name", placeholder="在庫チェッカー")
+    left, right = st.columns(2)
+    with left:
+        st.selectbox(
+            "種別 *",
+            options=list(KIND_VALUES),
+            format_func=kind_label,
+            key="form_kind",
+            on_change=on_kind_change,
+        )
+    with right:
+        st.selectbox(
+            "死活監視 *",
+            options=list(HEALTH_MODE_VALUES),
+            format_func=health_mode_label,
+            key="form_health_mode",
+            help="HTTP: ポートに応答するか / プロセス: 起動したプロセスが生きているか",
+        )
+    st.text_input("作業ディレクトリ *", key="form_directory", placeholder=r"C:\dev\tool-a")
+    st.text_input(
+        "起動コマンド *",
+        key="form_command",
+        placeholder=r".venv\Scripts\python.exe -m streamlit run app.py",
+        help="Streamlitの場合、--server.port / --server.address / --server.headless は自動で付与します。"
+        "空白を含む値は --name \"a b\" のように別に書いてください。",
+    )
+    left, right = st.columns(2)
+    with left:
+        st.text_input("ポート", key="form_port", placeholder="8502")
+    with right:
+        st.number_input("表示順", key="form_sort_order", step=1)
+    st.text_input(
+        "ログ出力先",
+        key="form_log_path",
+        placeholder="空欄なら作業ディレクトリ配下の tool-nexus.log",
+    )
+    st.checkbox("まとめて起動の対象にする", key="form_autostart")
+    st.text_area("説明", key="form_description", height=70)
+    return {
+        "name": st.session_state["form_name"],
+        "kind": st.session_state["form_kind"],
+        "directory": st.session_state["form_directory"],
+        "command": st.session_state["form_command"],
+        "port": st.session_state["form_port"],
+        "health_mode": st.session_state["form_health_mode"],
+        "log_path": st.session_state["form_log_path"],
+        "autostart": st.session_state["form_autostart"],
+        "description": st.session_state["form_description"],
+        "sort_order": st.session_state["form_sort_order"],
+    }
+
+
+def save_tool(repository: ToolRepository, values: dict[str, Any], tool_id: int | None) -> Tool | None:
+    """検証して保存する。失敗したらダイアログ内にエラーを出して None を返す。"""
+    try:
+        tool = build_tool(id=tool_id, **values)
+        return repository.update(tool) if tool_id else repository.create(tool)
+    except ValidationError as exc:
+        st.error(str(exc), icon="⛔")
+    except DuplicatePortError as exc:
+        st.error(str(exc), icon="⛔")
+    except DatabaseError as exc:
+        logger.exception("ツールの保存に失敗しました")
+        st.error(str(exc), icon="⛔")
+    return None
+
+
+@st.dialog("ツールを追加", width="large", on_dismiss=close_dialog)
+def create_dialog(repository: ToolRepository) -> None:
+    values = render_tool_form()
+    save_col, cancel_col = st.columns(2)
+    if save_col.button("登録", type="primary", use_container_width=True, key="create_submit"):
+        created = save_tool(repository, values, None)
+        if created is not None:
+            flash(f"「{created.name}」を登録しました。")
+            close_dialog()
+            st.rerun()
+    if cancel_col.button("キャンセル", use_container_width=True, key="create_cancel"):
+        close_dialog()
+        st.rerun()
+
+
+def get_target(repository: ToolRepository) -> Tool | None:
+    target_id = st.session_state.get("target_id")
+    return repository.get_by_id(int(target_id)) if target_id is not None else None
+
+
+def render_missing_target() -> None:
+    st.error("対象のツールが見つかりませんでした。", icon="⛔")
+    if st.button("閉じる", key="missing_close"):
+        close_dialog()
+        st.rerun()
+
+
+@st.dialog("ツールを編集", width="large", on_dismiss=close_dialog)
+def edit_dialog(repository: ToolRepository) -> None:
+    target = get_target(repository)
+    if target is None:
+        render_missing_target()
+        return
+
+    values = render_tool_form()
+    save_col, cancel_col = st.columns(2)
+    if save_col.button("更新", type="primary", use_container_width=True, key="edit_submit"):
+        updated = save_tool(repository, values, target.id)
+        if updated is not None:
+            flash(f"「{updated.name}」を更新しました。")
+            close_dialog()
+            st.rerun()
+    if cancel_col.button("キャンセル", use_container_width=True, key="edit_cancel"):
+        close_dialog()
+        st.rerun()
+
+    # 削除は誤操作を避けるため行には置かず、編集画面の奥に置く（行のウィジェットを3個に抑える意味もある）。
+    with st.expander("このツールを削除"):
+        st.caption("登録を削除します。起動中のツールは停止されません。この操作は取り消せません。")
+        st.checkbox(f"「{target.name}」を削除する", key="delete_confirmed")
+        if st.button(
+            "削除する",
+            key="delete_submit",
+            disabled=not st.session_state.get("delete_confirmed"),
+        ):
+            try:
+                repository.delete(int(target.id))
+            except DatabaseError as exc:
+                logger.exception("ツールの削除に失敗しました")
+                st.error(str(exc), icon="⛔")
+            else:
+                flash(f"「{target.name}」を削除しました。")
+                close_dialog()
+                st.rerun()
+
+
+@st.dialog("ログ", width="large", on_dismiss=close_dialog)
+def log_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
+    target = get_target(repository)
+    if target is None:
+        render_missing_target()
+        return
+
+    path = log_path_for(target, settings)
+    st.text(target.name)
+    st.code(str(path), language=None)  # 標準のコピーボタンでパスをコピーできる
+    try:
+        text = read_log_tail(path, max_lines=LOG_TAIL_LINES, max_bytes=LOG_TAIL_BYTES)
+    except OSError as exc:
+        st.error(f"ログを読み込めませんでした: {exc}", icon="⛔")
+        text = None
+    if text is None:
+        st.info("ログはまだありません。", icon="ℹ️")
+    else:
+        st.caption(f"末尾 {LOG_TAIL_LINES} 行まで")
+        st.code(text or "（空）", language=None, height=420)
+
+    reload_col, close_col = st.columns(2)
+    reload_col.button("再読み込み", use_container_width=True, key="log_reload")
+    if close_col.button("閉じる", use_container_width=True, key="log_close"):
+        close_dialog()
+        st.rerun()
+
+
+def render_dialogs(repository: ToolRepository, settings: dict[str, str]) -> None:
+    dialog = st.session_state.get("dialog")
+    if dialog == "create":
+        create_dialog(repository)
+    elif dialog == "edit":
+        edit_dialog(repository)
+    elif dialog == "log":
+        log_dialog(repository, settings)
+
+
+# ----------------------------------------------------------------------
+# 一覧（フラグメント）
+# ----------------------------------------------------------------------
+def format_time(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return value
+
+
+def open_url(tool: Tool) -> str | None:
+    """「開く」のURL。127.0.0.1 固定で、ユーザー入力は整数のポートのみ使う。"""
+    return f"http://127.0.0.1:{int(tool.port)}" if tool.port else None
+
+
+NOTICES: dict[Status, str] = {
+    Status.STARTING: "起動中…（応答を待っています）",
+    Status.FAILED: "起動できていない可能性があります。ログを確認してください。",
+    Status.UNKNOWN: "",
+}
+
+
+def render_tool_row(
+    repository: ToolRepository, settings: dict[str, str], health: ToolHealth
+) -> None:
+    """1件を1行で描画する。
+
+    行あたりのウィジェットは 起動/停止・ログ・編集 の3つに抑える。
+    状態・名前・パスは1つのHTML、「開く」は素のアンカーで描く（0ウィジェット）。
+    """
+    tool = health.tool
+    with st.container(key=f"tn-row-{tool.id}"):
+        main_col, port_col, action_col, log_col, edit_col = st.columns(
+            [6, 1.5, 0.9, 0.45, 0.45], vertical_alignment="center"
+        )
+        with main_col:
+            notice = NOTICES.get(health.status, "")
+            if health.status is Status.UNKNOWN:
+                notice = "監視しない設定です" if tool.health_mode == "none" else "状態を確認できませんでした"
+            started = format_time(tool.last_started_at)
+            render_tool_summary(
+                name=tool.name,
+                status=health.status.value,
+                status_label=health.label,
+                meta=[
+                    kind_label(tool.kind),
+                    f"監視: {health_mode_label(tool.health_mode)}",
+                    f"最終起動 {started}" if started else "",
+                    "まとめて起動" if tool.autostart else "",
+                ],
+                path=tool.directory,
+                notice=notice,
+            )
+        with port_col:
+            render_port_link(tool.port, open_url(tool))
+        with action_col:
+            if health.can_stop:
+                if st.button("停止", key=f"stop_{tool.id}", use_container_width=True):
+                    with st.spinner("停止しています…"):
+                        stop_tool(repository, tool)
+                    request_check()
+                    st.rerun(scope="fragment")
+            elif st.button("起動", key=f"start_{tool.id}", type="primary", use_container_width=True):
+                start_tool(repository, settings, tool)
+                request_check()
+                st.rerun(scope="fragment")
+        with log_col:
+            if st.button(":material/description:", key=f"log_{tool.id}", help="ログ"):
+                open_dialog("log", tool)
+        with edit_col:
+            if st.button(":material/edit:", key=f"edit_{tool.id}", help="編集・削除"):
+                open_dialog("edit", tool)
+
+
+def matches_query(tool: Tool, query: str) -> bool:
+    if not query:
+        return True
+    haystack = " ".join(
+        [tool.name, tool.directory, tool.command, tool.description, str(tool.port or "")]
+    ).lower()
+    return all(word in haystack for word in query.lower().split())
+
+
+def request_check() -> None:
+    """次の描画で必ずヘルスチェックを行う（再チェック・起動・停止の直後）。"""
+    st.session_state["force_check"] = True
+
+
+def check_tools(
+    repository: ToolRepository, settings: dict[str, str], tools: list[Tool]
+) -> list[ToolHealth]:
+    """必要なときだけヘルスチェックを行い、それ以外は前回の結果から状態を求める。"""
+    cache: dict[int, bool | None] = st.session_state["health_cache"]
+    cached = [ToolHealth(t, cache.get(int(t.id)), derive_status(t, cache.get(int(t.id)))) for t in tools]
+    due = is_check_due(
+        last_checked=st.session_state["health_checked_at"],
+        now=time.monotonic(),
+        interval=parse_interval(settings.get("health_interval", "60s")),
+        any_starting=any(h.status is Status.STARTING for h in cached),
+        forced=st.session_state["force_check"] or any(int(t.id) not in cache for t in tools),
+    )
+    if not due:
+        return cached
+
+    alive_by_id = probe_all(tools, timeout=health_timeout(settings))
+    st.session_state["force_check"] = False
+    st.session_state["health_checked_at"] = time.monotonic()
+    st.session_state["health_checked_label"] = f"{datetime.now():%H:%M:%S}"
+    results: list[ToolHealth] = []
+    for tool in tools:
+        alive = alive_by_id.get(int(tool.id))
+        cache[int(tool.id)] = alive
+        if alive:
+            repository.mark_seen(int(tool.id))
+        results.append(ToolHealth(tool, alive, derive_status(tool, alive)))
+    return results
+
+
+@st.fragment(run_every=LIST_TICK)
+def render_tool_list(repository: ToolRepository, settings: dict[str, str]) -> None:
+    """状態表示の部分。st.fragment(run_every=LIST_TICK) で包んで定期的に再実行する。
+
+    ページ全体は再実行しない（件数が増えると全体の再実行は重くなる）。
+    """
+    render_flash()
+
+    kind = st.session_state["kind_filter"]
+    tools = [
+        tool
+        for tool in repository.list_all()
+        if (kind == KIND_ALL or tool.kind == kind)
+        and matches_query(tool, st.session_state["search_query"].strip())
+    ]
+    healths = check_tools(repository, settings, tools)
+
+    wanted = STATUS_FILTERS[st.session_state["status_filter"]]
+    shown = [h for h in healths if h.status in wanted]
+    running = sum(h.status is Status.RUNNING for h in healths)
+
+    with st.container(key="tn-listhead"):
+        summary_col, recheck_col = st.columns([8, 1.5], vertical_alignment="center")
+        with summary_col:
+            render_summary(
+                [
+                    f"<span>起動中 <strong>{running}</strong> / {len(healths)}</span>",
+                    f"<span>表示 {len(shown)} 件</span>",
+                    f"<span>最終確認 {escape_html(st.session_state['health_checked_label'])}</span>",
+                ]
+            )
+        # 押すとフラグメントが再実行され、その場でヘルスチェックし直す。
+        recheck_col.button(
+            "再チェック",
+            icon=":material/refresh:",
+            use_container_width=True,
+            key="recheck",
+            on_click=request_check,
+        )
+
+    if not tools:
+        if repository.count() == 0:
+            render_note("ツールが登録されていません。「追加」から登録してください。")
+        else:
+            render_note("条件に一致するツールはありません。")
+        return
+    if not shown:
+        render_note("この状態のツールはありません。")
+        return
+
+    for health in shown:
+        render_tool_row(repository, settings, health)
+
+
+# ----------------------------------------------------------------------
+# 上部バー・左ナビ・ツールバー
+# ----------------------------------------------------------------------
+def select_kind(kind: str) -> None:
+    st.session_state["kind_filter"] = kind
+
+
+def render_top_bar() -> None:
+    with st.container(key="tn-topbar"):
+        brand_col, tabs_col = st.columns([2.6, 8.5], vertical_alignment="bottom")
+        with brand_col:
+            render_app_bar()
+        with tabs_col:
+            with st.container(key="tn-tabs"):
+                columns = st.columns([1.3] * len(KIND_TABS) + [6], vertical_alignment="bottom")
+                active = st.session_state["kind_filter"]
+                for column, (value, label) in zip(columns, KIND_TABS.items()):
+                    column.button(
+                        label,
+                        key=f"kind_tab_{value}",
+                        type="primary" if value == active else "secondary",
+                        use_container_width=True,
+                        on_click=select_kind,
+                        args=(value,),
+                    )
+
+
+def render_side_nav(repository: ToolRepository) -> None:
+    with st.container(key="tn-nav"):
+        st.markdown("### 状態")
+        st.radio(
+            "状態",
+            options=list(STATUS_FILTERS),
+            key="status_filter",
+            label_visibility="collapsed",
+        )
+        st.markdown("---")
+        st.caption(f"登録 {repository.count()} 件")
+
+
+def render_toolbar() -> None:
+    with st.container(key="tn-header"):
+        search_col, create_col = st.columns([9, 1.8], vertical_alignment="center")
+    with search_col:
+        st.text_input(
+            "検索",
+            key="search_query",
+            placeholder="名前 / ディレクトリ / コマンド / 説明 / ポート",
+            label_visibility="collapsed",
+        )
+    with create_col:
+        if st.button("追加", icon=":material/add:", type="primary", use_container_width=True):
+            open_dialog("create")
+
+
+# ----------------------------------------------------------------------
+# メイン
+# ----------------------------------------------------------------------
+def main() -> None:
+    st.set_page_config(
+        page_title=APP_NAME,
+        page_icon=APP_ICON,
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+    apply_styles()
+    init_state()
+
+    try:
+        repository = get_repository()
+        settings = repository.get_settings()
+    except DatabaseError as exc:
+        logger.exception("データベースの初期化に失敗しました")
+        st.error(str(exc), icon="⛔")
+        st.stop()
+        return
+
+    render_top_bar()
+    try:
+        nav_col, main_col = st.columns([1.7, 8.3], gap="medium")
+        with nav_col:
+            render_side_nav(repository)
+        with main_col:
+            render_toolbar()
+            render_tool_list(repository, settings)
+        render_dialogs(repository, settings)
+    except DatabaseError as exc:
+        logger.exception("データベース操作に失敗しました")
+        st.error(str(exc), icon="⛔")
+
+
+if __name__ == "__main__":
+    main()

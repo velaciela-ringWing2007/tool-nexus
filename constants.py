@@ -46,6 +46,15 @@ MAX_NAME_LENGTH: Final[int] = 200
 MIN_PORT: Final[int] = 1
 MAX_PORT: Final[int] = 65535
 
+# TOOL NEXUS 自身のポート（.streamlit/config.toml と合わせる）。
+# 自動割当の範囲外に置き、さらに設定に関わらず常に割当候補から除外する
+# （停止中に他のツールへ割り当てると、TOOL NEXUS 自身が起動できなくなるため）。
+TOOL_NEXUS_PORT: Final[int] = 8499
+
+# ログ画面で表示する末尾の行数と、読み込む最大バイト数。
+LOG_TAIL_LINES: Final[int] = 300
+LOG_TAIL_BYTES: Final[int] = 256 * 1024
+
 # settings テーブルの既定値。値は文字列で保存する。
 DEFAULT_SETTINGS: Final[dict[str, str]] = {
     "health_interval": "60s",
@@ -53,6 +62,8 @@ DEFAULT_SETTINGS: Final[dict[str, str]] = {
     "port_range_high": "8999",
     "default_log_dir": "",
     "health_timeout": "2.0",
+    # 8501 は LIST NEXUS が使用（同じPCで両方動かす前提）
+    "reserved_ports": "8501",
 }
 
 

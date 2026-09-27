@@ -158,6 +158,30 @@ def resolve_log_path(
     return directory / DEFAULT_LOG_FILENAME
 
 
+def read_log_tail(path: Path, *, max_lines: int, max_bytes: int) -> str | None:
+    """ログファイルの末尾を返す。ファイルが無ければ None。
+
+    大きなログでも読み込み量を抑えるため、末尾 max_bytes だけを読む。
+    子プロセスの出力はロケール依存（cp932）のこともあるため、UTF-8で読めなければ cp932 で読む。
+    """
+    try:
+        with open(path, "rb") as file:
+            file.seek(0, 2)
+            size = file.tell()
+            file.seek(max(0, size - max_bytes))
+            data = file.read()
+    except FileNotFoundError:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("cp932", errors="replace")
+    lines = text.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # 途中から読んだ先頭行は欠けているので捨てる
+    return "\n".join(lines[-max_lines:])
+
+
 # ----------------------------------------------------------------------
 # 起動時刻（CreationDate）の正規化
 # ----------------------------------------------------------------------
