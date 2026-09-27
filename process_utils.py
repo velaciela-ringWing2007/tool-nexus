@@ -249,9 +249,11 @@ def _parse_creation_date(text: str) -> datetime | None:
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
-def run_powershell(script: str, *, runner: Runner = subprocess.run) -> str:
+def run_powershell(
+    script: str, *, runner: Runner = subprocess.run, timeout: float = POWERSHELL_TIMEOUT
+) -> str:
     """PowerShell を shell=False で実行し、標準出力を返す。"""
-    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]
+    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", script]
     try:
         result = runner(
             argv,
@@ -259,7 +261,7 @@ def run_powershell(script: str, *, runner: Runner = subprocess.run) -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=POWERSHELL_TIMEOUT,
+            timeout=timeout,
             creationflags=_CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
