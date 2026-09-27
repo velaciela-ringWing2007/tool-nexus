@@ -26,42 +26,54 @@ LIST NEXUS（SharePoint Listリンク管理）の姉妹ツールであり、UI�
 
 ---
 
-## 2. 初期ディレクトリ構成
+## 2. ディレクトリ構成
 
 ```text
 tool-nexus/
-├─ app.py
-├─ database.py
-├─ models.py
-├─ repositories.py
-├─ process_utils.py      … プロセス起動・停止・探索
-├─ health.py             … 死活監視
-├─ port_utils.py         … 空きポートの割当
-├─ platform_ops.py       … OS依存機能の切り替え（3.2）
-├─ os_windows.py         … Windows実装
-├─ os_linux.py           … Linux実装
-├─ launch_assist.py      … ファイル選択と起動方式の推測（6.9）
-├─ styles.py
-├─ constants.py
-├─ settings_utils.py     … 動作設定の検証（8.2）
-├─ backup.py             … JSONバックアップと復元（7.3）
-├─ requirements.txt
-├─ README.md
-├─ SPEC.md
-├─ .gitignore
-├─ .gitattributes
+├─ app.py                   … 起動の入口（streamlit run app.py）。tool_nexus.ui.main を呼ぶだけ
+├─ tool_nexus/
+│  ├─ core/                 … 業務の中心（UI・OSに依存しない）
+│  │  ├─ constants.py
+│  │  ├─ database.py        … SQLite接続・スキーマ
+│  │  ├─ models.py          … データモデルと入力検証
+│  │  ├─ repositories.py    … tools / settings テーブル
+│  │  ├─ ports.py           … 空きポートの割当とポート設定の検証（6.5）
+│  │  ├─ settings.py        … 動作設定の検証（8.2）
+│  │  └─ backup.py          … JSONバックアップと復元（7.3）
+│  ├─ process/              … プロセスの起動・停止・監視（OSに依存しない部分）
+│  │  ├─ base.py            … 例外・データ型・起動時刻の正規化
+│  │  ├─ control.py         … 起動・停止・PID照合・検出（6.2, 6.3, 6.6）
+│  │  ├─ health.py          … 死活監視と表示用の状態（6.4）
+│  │  └─ launch_assist.py   … ファイル選択と起動方式の推測（6.9）
+│  ├─ osdep/                … OS依存機能の切り替え（3.2）
+│  │  ├─ __init__.py        … 実行中のOSに応じて windows / linux を選ぶ
+│  │  ├─ windows.py
+│  │  └─ linux.py
+│  └─ ui/                   … Streamlit の画面
+│     ├─ styles.py          … CSS とHTML片（ユーザー入力は必ずエスケープ）
+│     ├─ state.py           … session_state・通知・ダイアログの開閉
+│     ├─ actions.py         … 起動・停止・まとめて起動
+│     ├─ dialogs.py         … 登録・編集・ログ・ポートからの停止・検出
+│     ├─ tool_list.py       … 一覧（フラグメント）
+│     ├─ layout.py          … 上部バー・左ナビ・ツールバー
+│     ├─ settings_view.py   … 設定画面（8.2）
+│     └─ main.py            … 画面全体の組み立て
+├─ tests/
 ├─ .streamlit/config.toml
 ├─ setup.bat / setup.sh
 ├─ start-tool-nexus.bat / start-tool-nexus.sh
-├─ data/
-│  └─ .gitkeep
-└─ tests/
-   ├─ __init__.py
-   ├─ test_repositories.py
-   ├─ test_port_utils.py
-   ├─ test_process_utils.py
-   └─ test_health.py
+├─ data/                    … SQLite（Git管理外）
+├─ requirements.txt / pytest.ini
+├─ README.md / SPEC.md / LICENSE
+└─ .github/workflows/tests.yml
 ```
+
+依存の向きは `ui → process → osdep → process.base`、`ui / process → core` の一方向にする
+（core は他のどのパッケージにも依存しない）。
+
+パッケージは Python の慣習どおり浅く保ち、`src` レイアウトは採らない
+（配布しないアプリであり、`streamlit run app.py` だけで import が通る方が手順が少ないため）。
+パッケージ名に標準ライブラリと同じ名前（`platform` など）は使わない。
 
 SQLiteは `data/tool_nexus.sqlite3` に作成し、Git管理対象外とする。
 
@@ -92,9 +104,9 @@ Windowsでは PowerShell（`Get-CimInstance` / `Get-NetTCPConnection`）、Linux
 フレームワークは作らず、**OSに依存する機能だけを1枚の層で切り替える**。
 
 ```text
-platform_ops.py   … 実行中のOSに応じて下のどちらかを選び、同じ関数名で公開する
-├─ os_windows.py  … PowerShell / taskkill / Windows Forms
-└─ os_linux.py    … /proc / シグナル / zenity・kdialog
+tool_nexus/osdep/__init__.py … 実行中のOSに応じて下のどちらかを選び、同じ関数名で公開する
+├─ windows.py                … PowerShell / taskkill / Windows Forms
+└─ linux.py                  … /proc / シグナル / zenity・kdialog
 ```
 
 | 機能 | Windows | Linux |
