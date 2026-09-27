@@ -21,6 +21,7 @@ from process_utils import (
     ProcessQueryError,
     StopError,
     build_argv,
+    get_creation_dates,
     get_process_creation_date,
     launch,
     normalize_creation_date,
@@ -257,6 +258,30 @@ class TestGetProcessCreationDate:
     def test_unparseable_output_raises(self) -> None:
         with pytest.raises(ProcessQueryError):
             get_process_creation_date(1234, runner=FakeRunner(stdout="???"))
+
+
+class TestGetCreationDates:
+    def test_batches_into_one_call(self) -> None:
+        runner = FakeRunner(
+            stdout="10\t2026-09-27T19:30:31.3057490+09:00\r\n20\t20260927193032.000000+540\r\n"
+        )
+        result = get_creation_dates([20, 10, 10, 30], runner=runner)
+        assert result == {
+            10: normalize_creation_date("2026-09-27T19:30:31+09:00"),
+            20: normalize_creation_date("2026-09-27T19:30:32+09:00"),
+        }
+        assert len(runner.calls) == 1
+        assert "ProcessId=10 OR ProcessId=20 OR ProcessId=30" in runner.calls[0][0][-1]
+
+    def test_empty_does_not_call_powershell(self) -> None:
+        runner = FakeRunner()
+        assert get_creation_dates([], runner=runner) == {}
+        assert get_creation_dates([0, None], runner=runner) == {}
+        assert runner.calls == []
+
+    def test_failure_raises(self) -> None:
+        with pytest.raises(ProcessQueryError):
+            get_creation_dates([1], runner=FakeRunner(returncode=1))
 
 
 # ----------------------------------------------------------------------

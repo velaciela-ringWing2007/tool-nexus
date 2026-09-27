@@ -19,7 +19,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT
 
@@ -259,6 +259,29 @@ def get_process_creation_date(pid: int, *, runner: Runner = subprocess.run) -> s
     if normalized is None:
         raise ProcessQueryError(f"起動時刻を解釈できませんでした: {output}")
     return normalized
+
+
+def get_creation_dates(pids: Iterable[int], *, runner: Runner = subprocess.run) -> dict[int, str]:
+    """複数PIDの起動時刻をPowerShell 1回でまとめて取得する。存在しないPIDは結果に含まれない。
+
+    一覧の死活監視でツールごとにPowerShellを起動すると遅いため、こちらを使う。
+    """
+    unique = sorted({int(pid) for pid in pids if pid})
+    if not unique:
+        return {}
+    condition = " OR ".join(f"ProcessId={pid}" for pid in unique)
+    script = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        f'Get-CimInstance Win32_Process -Filter "{condition}" | '
+        'ForEach-Object { "$($_.ProcessId)`t$($_.CreationDate.ToString(\'o\'))" }'
+    )
+    result: dict[int, str] = {}
+    for line in run_powershell(script, runner=runner).splitlines():
+        pid_text, _, date_text = line.strip().partition("\t")
+        normalized = normalize_creation_date(date_text)
+        if pid_text.isdigit() and normalized:
+            result[int(pid_text)] = normalized
+    return result
 
 
 CreationDateLookup = Callable[[int], "str | None"]
