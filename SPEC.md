@@ -115,6 +115,14 @@ OSに依存しないもの（共通で使う）：PID照合（`verify_pid`）、
   Linux の `/proc` 解析は、テストで一時ディレクトリに作った疑似 `/proc` を読ませて、Windows上でも検証する
 * Linuxの停止は、Windowsと違っていきなり強制終了せず、まずSIGTERMで終了処理の機会を与える
 * 停止前の起動時刻の照合（6.3）はLinuxでも同じく行う（PIDはLinuxでも再利用される）
+* **実行ファイルのパスはシンボリックリンクをたどらずに絶対パス化する**（`Path.resolve()` を使わない）。
+  Linuxのvenvの `python` はシステムの `python3.x` へのリンクで、たどるとvenvの外のPythonになり、
+  venvに入れたパッケージが見えなくなる（WSLのUbuntu 24.04で確認。Windowsのvenvは実ファイルなので起きない）
+* **Linuxでは終了した子プロセスがゾンビとして残る**。ゾンビは `/proc` に残り起動時刻も同じなので、
+  そのままでは照合が一致して「生きている」と誤判定される。起動した `Popen` を保持して状態確認のたびに回収し、
+  念のため状態 `Z` のプロセスは存在しないものとして扱う
+* 実プロセスでの確認：Windows 11、WSLのUbuntu 24.04、GitHub Actions（windows-latest / ubuntu-latest）で
+  結合テストを含む全テストが通ることを確認済み
 
 #### 検証
 
