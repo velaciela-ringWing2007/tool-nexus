@@ -592,6 +592,9 @@ CREATE TABLE IF NOT EXISTS settings (
 * **HTML出力は必ず `escape_html()` を通す**。TOOL NEXUSはコマンド文字列を画面に出すため特に重要
 * `.streamlit/config.toml` は `client.toolbarMode = "minimal"`（Deployボタンを消す）、
   `server.address = "127.0.0.1"`、`server.port = 8499`、`browser.gatherUsageStats = false`
+* アイコンだけのボタンは `use_container_width=True` にする。列幅をCSSで固定しても、
+  ボタンを包む要素が内容幅に縮み、ボタンが細い楕円（幅16px）になる（実機で確認）
+* 種別タブは比率ではなく固定幅（文字幅）にし、残りを余白にする。比率配分だと幅1280pxでも「Streamlit」が省略される
 * 配色は `styles.py` の `:root` のCSS変数を差し替える。起動中=`--ln-accent`、停止=`--ln-muted`、起動中…=`--ln-warn`
 
 ### 8.2 設定画面
