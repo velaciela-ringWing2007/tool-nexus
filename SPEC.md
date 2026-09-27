@@ -123,6 +123,12 @@ OSに依存しないもの（共通で使う）：PID照合（`verify_pid`）、
 * **Linuxでは終了した子プロセスがゾンビとして残る**。ゾンビは `/proc` に残り起動時刻も同じなので、
   そのままでは照合が一致して「生きている」と誤判定される。起動した `Popen` を保持して状態確認のたびに回収し、
   念のため状態 `Z` のプロセスは存在しないものとして扱う
+* **ポートの空き確認はLinuxでは `SO_REUSEADDR` を付けて `bind()` する**。Linuxでは閉じた接続が TIME_WAIT で
+  約60秒残り、素の `bind()` は失敗するため、停止直後（ヘルスチェックの接続でも起きる）のポートを「使用中」と誤判定する
+  （GitHub Actions の Ubuntu で発覚）。`SO_REUSEADDR` を付けてもLISTEN中のポートは使用中と判定される。
+  なお TIME_WAIT を無視できるのは元のソケットにも `SO_REUSEADDR` がある場合だけだが、
+  Streamlit（uvicorn / tornado）や `http.server` はどれも付けている。
+  Windowsの `SO_REUSEADDR` はLISTEN中のポートにまで `bind()` できてしまうため付けない
 * 実プロセスでの確認：Windows 11、WSLのUbuntu 24.04、GitHub Actions（windows-latest / ubuntu-latest）で
   結合テストを含む全テストが通ることを確認済み
 
