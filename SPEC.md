@@ -173,9 +173,19 @@ proc = subprocess.Popen(
     argv,
     cwd=directory,
     stdout=log_file, stderr=subprocess.STDOUT,
-    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
 )
 ```
+
+**`DETACHED_PROCESS` は使わない**（実機で確認）。
+`CREATE_NO_WINDOW` と併用すると `CREATE_NO_WINDOW` が無視され、親（venvの `python.exe` はリダイレクタ）が
+コンソール無しで起動する。その子の `python.exe` は自分用のコンソールを新規に作って**ウィンドウを表示し**、
+ユーザーがそれを閉じるとツールが落ちる。
+`CREATE_NO_WINDOW` だけなら非表示のコンソールが作られて子に引き継がれ、
+TOOL NEXUS側のコンソールとも切り離されるため、TOOL NEXUSを閉じてもツールは動き続ける。
+
+`argv[0]` が相対パス（例: `.venv\Scripts\python.exe`）の場合は、作業ディレクトリ基準で絶対パスに解決してから渡す。
+Windowsの `CreateProcess` は相対パスの実行ファイルを `cwd` 引数ではなく呼び出し元のカレントディレクトリ基準で探すため。
 
 起動直後にPIDの起動時刻（`CreationDate`）を取得し、`last_pid` と
 `last_pid_created_at` に保存する（6.3・6.4の照合に使う）。
@@ -192,6 +202,10 @@ def split_command(command: str) -> list[str]:
     tokens = shlex.split(command, posix=False)
     return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 ```
+
+* 閉じていないクォートは `ValueError` になる。登録時の検証で弾く
+* 既知の制約: `--name="a b"` のようにトークン途中から始まるクォート内の空白では分割されてしまう。
+  空白を含む値は `--name "a b"` と別トークンに分けて書く
 
 必ず守ること：
 
@@ -552,6 +566,7 @@ LIST NEXUS（Streamlit 1.60）で計測した値。
 * 管理できるのはこのPC上のプロセスのみ
 * 停止は強制終了（`taskkill /F`）であり、ツール側の終了処理は走らない
 * 起動はデタッチするため、TOOL NEXUSを閉じてもツールは動き続ける（意図した挙動）
+* 起動コマンドで `--name="a b"` のようにトークン途中のクォートに空白を含める書き方はできない（6.2）
 
 ---
 
