@@ -96,7 +96,7 @@ def stop_tool(repository: ToolRepository, tool: Tool) -> bool:
         flash(f"「{tool.name}」を停止できませんでした。{exc}", "error")
         return True
 
-    repository.clear_pid(int(tool.id))
+    repository.record_stop(int(tool.id))
     report_stopped(tool)
     return True
 

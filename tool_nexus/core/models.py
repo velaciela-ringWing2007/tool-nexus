@@ -48,6 +48,7 @@ class Tool:
     last_pid: int | None = None
     last_pid_created_at: str | None = None
     last_started_at: str | None = None
+    last_stopped_at: str | None = None
     last_seen_at: str | None = None
     created_at: str = ""
     updated_at: str = ""
@@ -75,6 +76,7 @@ def row_to_tool(row: sqlite3.Row) -> Tool:
         last_pid=row["last_pid"],
         last_pid_created_at=row["last_pid_created_at"],
         last_started_at=row["last_started_at"],
+        last_stopped_at=row["last_stopped_at"],
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",

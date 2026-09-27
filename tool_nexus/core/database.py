@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tools (
     last_pid INTEGER,
     last_pid_created_at TEXT,
     last_started_at TEXT,
+    last_stopped_at TEXT,
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -96,8 +97,11 @@ def _migrate(connection: sqlite3.Connection) -> None:
     """既存DBに後から足した列を補う。
 
     列の追加は ALTER TABLE で行い、既存データはそのまま残す。
-    現時点では初版のスキーマのみ。列を足すときはここに追記する。
     """
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(tools)")}
+    if "last_stopped_at" not in columns:
+        # 停止操作の記録（起動直後に停止したとき「起動中…」に戻らないようにするため。SPEC 6.4）
+        connection.execute("ALTER TABLE tools ADD COLUMN last_stopped_at TEXT")
 
 
 def initialize_database(db_path: Path | str = DATABASE_PATH) -> None:

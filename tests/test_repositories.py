@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -255,6 +256,14 @@ class TestStartRecord:
         assert loaded.last_pid_created_at is None
         assert loaded.last_started_at
 
+    def test_record_stop(self, repo: ToolRepository, workdir: Path) -> None:
+        tool = repo.create(make_tool(workdir))
+        repo.record_start(tool.id, pid=4321, created_at=STARTED)
+        repo.record_stop(tool.id)
+        loaded = repo.get_by_id(tool.id)
+        assert loaded.last_pid is None and loaded.last_pid_created_at is None
+        assert loaded.last_stopped_at and loaded.last_started_at
+
     def test_mark_seen(self, repo: ToolRepository, workdir: Path) -> None:
         tool = repo.create(make_tool(workdir))
         repo.mark_seen(tool.id)
@@ -290,6 +299,33 @@ class TestSettings:
             connection.execute("INSERT INTO settings (key, value) VALUES ('legacy', 'x')")
             connection.commit()
         assert "legacy" not in repo.get_settings()
+
+
+def test_migrates_database_without_last_stopped_at(tmp_path: Path, workdir: Path) -> None:
+    """last_stopped_at を足す前のDBでも、初期化で列が追加されデータが残ること."""
+    path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE tools (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'streamlit', directory TEXT NOT NULL, command TEXT NOT NULL,
+                port INTEGER, health_mode TEXT NOT NULL DEFAULT 'http', log_path TEXT NOT NULL DEFAULT '',
+                autostart INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0, last_pid INTEGER, last_pid_created_at TEXT,
+                last_started_at TEXT, last_seen_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO tools (name, directory, command, port, created_at, updated_at)
+            VALUES ('既存', '/x', 'python a.py', 8600, 'c', 'u');
+            """
+        )
+    connection.close()
+    repo = ToolRepository(path)
+    repo.initialize()
+    [tool] = repo.list_all()
+    assert tool.name == "既存" and tool.last_stopped_at is None
+    repo.record_stop(tool.id)
+    assert repo.get_by_id(tool.id).last_stopped_at
 
 
 def test_initialize_is_idempotent(repo: ToolRepository, workdir: Path) -> None:

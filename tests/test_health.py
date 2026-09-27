@@ -213,6 +213,23 @@ class TestDeriveStatus:
         tool = make_tool(last_started_at=STARTED)
         assert derive_status(tool, False, now=at(601)) is Status.STOPPED
 
+    def test_stopped_right_after_start_is_stopped(self) -> None:
+        # 起動から30秒以内に停止しても「起動中…」に戻らない（実機で発覚）
+        tool = make_tool(last_started_at=STARTED, last_stopped_at="2026-09-27T13:45:10+09:00")
+        assert derive_status(tool, False, now=at(12)) is Status.STOPPED
+
+    def test_stop_in_the_same_second_as_start_is_stopped(self) -> None:
+        tool = make_tool(last_started_at=STARTED, last_stopped_at=STARTED)
+        assert derive_status(tool, False, now=at(1)) is Status.STOPPED
+
+    def test_restart_after_stop_is_starting(self) -> None:
+        tool = make_tool(last_started_at=STARTED, last_stopped_at="2026-09-27T13:40:00+09:00")
+        assert derive_status(tool, False, now=at(5)) is Status.STARTING
+
+    def test_alive_wins_over_stop_record(self) -> None:
+        tool = make_tool(last_started_at=STARTED, last_stopped_at="2026-09-27T13:46:00+09:00")
+        assert derive_status(tool, True, now=at(120)) is Status.RUNNING
+
     def test_seen_after_start_then_down_is_stopped(self) -> None:
         tool = make_tool(last_started_at=STARTED, last_seen_at="2026-09-27T13:45:20+09:00")
         assert derive_status(tool, False, now=at(60)) is Status.STOPPED

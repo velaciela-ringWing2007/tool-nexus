@@ -382,7 +382,7 @@ def port_stop_dialog(repository: ToolRepository) -> None:
         except StopError as exc:
             flash(f"「{target.name}」を停止できませんでした。{exc}", "error")
         else:
-            repository.clear_pid(int(target.id))
+            repository.record_stop(int(target.id))
             report_stopped(target)
         close_dialog()
         request_check()

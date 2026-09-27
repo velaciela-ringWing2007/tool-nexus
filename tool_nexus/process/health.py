@@ -193,6 +193,7 @@ def derive_status(tool: Tool, alive: bool | None, *, now: datetime | None = None
     | ------------------------------------------------------ | -------- |
     | 生存                                                   | RUNNING  |
     | 判定できない（none モード、照会失敗）                  | UNKNOWN  |
+    | 起動後に停止操作をした                                 | STOPPED  |
     | 起動操作から30秒以内                                   | STARTING |
     | 30秒超〜10分、その起動以降に一度もヘルスが通っていない | FAILED   |
     | それ以外（記録が古い・無い、起動後に一度は通った）     | STOPPED  |
@@ -204,6 +205,9 @@ def derive_status(tool: Tool, alive: bool | None, *, now: datetime | None = None
 
     started = _parse(tool.last_started_at)
     if started is None:
+        return Status.STOPPED
+    stopped = _parse(tool.last_stopped_at)
+    if stopped is not None and stopped >= started:
         return Status.STOPPED
     current = now or datetime.now().astimezone()
     elapsed = current - started

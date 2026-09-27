@@ -17,7 +17,7 @@ from tool_nexus.core.models import Tool, now_iso, row_to_tool, tool_to_params
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,
     description, sort_order, last_pid, last_pid_created_at, last_started_at,
-    last_seen_at, created_at, updated_at
+    last_stopped_at, last_seen_at, created_at, updated_at
 """
 
 # 既定の並び順: 表示順 → 名前
@@ -238,6 +238,19 @@ class ToolRepository:
         self._execute_update(
             "UPDATE tools SET last_pid = NULL, last_pid_created_at = NULL WHERE id = ?",
             (tool_id,),
+        )
+
+    def record_stop(self, tool_id: int) -> None:
+        """停止操作を記録し、PIDと起動時刻を対で消去する。
+
+        停止の記録が無いと、起動から30秒以内に停止したときに「起動中…」と表示されてしまう（SPEC 6.4）。
+        """
+        self._execute_update(
+            """
+            UPDATE tools SET last_pid = NULL, last_pid_created_at = NULL, last_stopped_at = ?
+            WHERE id = ?
+            """,
+            (now_iso(), tool_id),
         )
 
     def mark_seen(self, tool_id: int) -> None:
