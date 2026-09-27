@@ -91,11 +91,12 @@ def split_command(command: str) -> list[str]:
     return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
-def build_argv(command: str, *, kind: str, port: int | None) -> list[str]:
+def build_argv(command: str, *, kind: str, port: int | str | None) -> list[str]:
     """登録内容から起動用のargvを組み立てる（実行ファイルの解決は行わない）。
 
     コマンド中の {port} は全種別で登録済みのポートに置き換える。
     streamlit のときだけ --server.* を付与し、コマンドに既に書かれていれば二重付与しない。
+    port は画面のプレビュー用に文字列（「保存時に割当」など）も受け付ける。
     """
     try:
         argv = split_command(command)
@@ -106,7 +107,7 @@ def build_argv(command: str, *, kind: str, port: int | None) -> list[str]:
     if any(PORT_PLACEHOLDER in arg for arg in argv):
         if not port:
             raise LaunchError(f"起動コマンドに {PORT_PLACEHOLDER} がありますが、ポートが登録されていません。")
-        argv = [arg.replace(PORT_PLACEHOLDER, str(int(port))) for arg in argv]
+        argv = [arg.replace(PORT_PLACEHOLDER, str(port)) for arg in argv]
     if kind != KIND_STREAMLIT:
         return argv
 

@@ -27,6 +27,7 @@ from constants import (
     KIND_VALUES,
     LOG_TAIL_BYTES,
     LOG_TAIL_LINES,
+    TOOL_NEXUS_PORT,
     health_mode_label,
     kind_label,
 )
@@ -41,7 +42,15 @@ from health import (
 )
 from models import Tool, ValidationError, build_tool, can_auto_assign_port, default_health_mode
 from port_utils import PortError, assign_port, is_port_free
+from launch_assist import AssistError, pick_file, pick_folder, quote, suggest_from_file
 from process_utils import (
+    DetectedTool,
+    ProcessInfo,
+    ProcessQueryError,
+    build_argv,
+    detect_streamlit,
+    find_port_owner,
+    take_snapshot,
     LaunchError,
     PidStatus,
     ProcessNotIdentifiedError,
@@ -214,25 +223,36 @@ def wait_port_released(port: int, timeout: float = STOP_RELEASE_TIMEOUT) -> bool
     return is_port_free(port)
 
 
-def stop_tool(repository: ToolRepository, tool: Tool) -> None:
+def stop_tool(repository: ToolRepository, tool: Tool) -> bool:
+    """記録済みのPIDで停止する。
+
+    照合が取れず、ポートから引き直せる場合は False を返す（呼び出し側で確認ダイアログを開く）。
+    """
     try:
         stop(tool.last_pid, tool.last_pid_created_at)
     except ProcessNotIdentifiedError as exc:
         if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
             # 記録しているプロセスはもう存在しない。古い記録は消しておく。
             repository.clear_pid(int(tool.id))
+        if tool.port:
+            return False
         flash(
             f"「{tool.name}」: 対象プロセスを特定できませんでした。停止していません。"
             "TOOL NEXUSの外で起動されたか、既に終了している可能性があります。"
             "動いている場合はタスクマネージャ等で停止してください。",
             "error",
         )
-        return
+        return True
     except StopError as exc:
         flash(f"「{tool.name}」を停止できませんでした。{exc}", "error")
-        return
+        return True
 
     repository.clear_pid(int(tool.id))
+    report_stopped(tool)
+    return True
+
+
+def report_stopped(tool: Tool) -> None:
     if tool.port and not wait_port_released(tool.port):
         flash(
             f"「{tool.name}」を停止しましたが、ポート {tool.port} がまだ解放されていません。",
@@ -242,11 +262,35 @@ def stop_tool(repository: ToolRepository, tool: Tool) -> None:
         flash(f"「{tool.name}」を停止しました。")
 
 
+def start_autostart_tools(repository: ToolRepository, settings: dict[str, str]) -> None:
+    """「まとめて起動」の対象を順に起動する。起動中・起動中…のものは飛ばす（二重起動しない）。"""
+    tools = [tool for tool in repository.list_all() if tool.autostart]
+    if not tools:
+        flash("まとめて起動の対象がありません。編集画面で「まとめて起動の対象にする」を有効にしてください。", "warning")
+        return
+    alive_by_id = probe_all(tools, timeout=health_timeout(settings))
+    started = skipped = 0
+    for tool in tools:
+        alive = alive_by_id.get(int(tool.id))
+        status = derive_status(tool, alive)
+        # 監視しない設定（不明）でも起動記録が残っていれば動いている可能性があるので飛ばす
+        if status in (Status.RUNNING, Status.STARTING) or (status is Status.UNKNOWN and tool.last_pid):
+            skipped += 1
+            continue
+        start_tool(repository, settings, tool)
+        started += 1
+    flash(f"まとめて起動: {started} 件を起動しました（起動済みのため {skipped} 件を飛ばしました）。")
+    request_check()
+
+
 # ----------------------------------------------------------------------
 # ダイアログ制御
 # ----------------------------------------------------------------------
-def prime_form(tool: Tool | None = None) -> None:
-    """登録・編集フォームの初期値を session_state へ設定する（ウィジェット生成前に呼ぶ）。"""
+def prime_form(tool: Tool | None = None, overrides: dict[str, Any] | None = None) -> None:
+    """登録・編集フォームの初期値を session_state へ設定する（ウィジェット生成前に呼ぶ）。
+
+    overrides は検出結果などから初期値を入れる場合に使う（キーは FORM_KEYS と同じ）。
+    """
     values = dict(FORM_KEYS)
     if tool is not None:
         values.update(
@@ -263,19 +307,23 @@ def prime_form(tool: Tool | None = None) -> None:
                 "form_sort_order": tool.sort_order,
             }
         )
+    values.update(overrides or {})
     for key, value in values.items():
         st.session_state[key] = value
     st.session_state["delete_confirmed"] = False
+    st.session_state["form_notes"] = []
 
 
-def open_dialog(name: str, tool: Tool | None = None) -> None:
+def open_dialog(
+    name: str, tool: Tool | None = None, overrides: dict[str, Any] | None = None
+) -> None:
     """ダイアログを開く。
 
     一覧はフラグメント内にあり、ボタンを押してもフラグメントしか再実行されない。
     ダイアログはアプリ全体の描画で開くため、アプリ全体を再実行する。
     """
     if name in ("create", "edit"):
-        prime_form(tool)
+        prime_form(tool, overrides)
     st.session_state["dialog"] = name
     st.session_state["target_id"] = tool.id if tool else None
     st.rerun(scope="app")
@@ -291,7 +339,79 @@ def on_kind_change() -> None:
     st.session_state["form_health_mode"] = default_health_mode(st.session_state["form_kind"])
 
 
+def on_pick_file() -> None:
+    """ファイルを選ばせ、起動方式を推測してフォームに入れる（SPEC 6.9）。
+
+    ボタンの on_click で呼ぶ（ウィジェット生成前に session_state を書き換えるため）。
+    推測は入力欄に入れるだけで、保存はユーザーが確認してから行う。
+    """
+    try:
+        path = pick_file(st.session_state.get("form_directory") or None)
+        if path is None:
+            return
+        suggestion = suggest_from_file(path)
+    except AssistError as exc:
+        st.session_state["form_notes"] = [("error", str(exc))]
+        return
+
+    if not str(st.session_state.get("form_name", "")).strip():
+        st.session_state["form_name"] = suggestion.name
+    st.session_state["form_directory"] = suggestion.directory
+    st.session_state["form_command"] = suggestion.command
+    st.session_state["form_kind"] = suggestion.kind
+    st.session_state["form_health_mode"] = suggestion.health_mode
+    st.session_state["form_notes"] = [("info", note) for note in suggestion.notes] + [
+        ("info", "推測した内容です。下の「実行されるコマンド」を確認してから登録してください。")
+    ]
+
+
+def on_pick_folder() -> None:
+    try:
+        path = pick_folder(st.session_state.get("form_directory") or None)
+    except AssistError as exc:
+        st.session_state["form_notes"] = [("error", str(exc))]
+        return
+    if path is not None:
+        st.session_state["form_directory"] = str(path)
+
+
+def render_command_preview(values: dict[str, Any]) -> None:
+    """実行されるコマンドを表示する（{port} の置き換えと --server.* の付与を反映）。"""
+    command = str(values["command"] or "").strip()
+    if not command:
+        return
+    port_text = str(values["port"] or "").strip()
+    auto = not port_text and can_auto_assign_port(values["kind"], command)
+    try:
+        argv = build_argv(
+            command, kind=values["kind"], port=port_text or ("<保存時に割当>" if auto else None)
+        )
+    except LaunchError as exc:
+        st.caption(f"実行されるコマンド: {exc}")
+        return
+    shown = " ".join(quote(arg) for arg in argv)
+    st.caption("実行されるコマンド（作業ディレクトリで実行）")
+    st.code(shown, language=None, wrap_lines=True)
+
+
 def render_tool_form() -> dict[str, Any]:
+    pick_col, note_col = st.columns([1.6, 5], vertical_alignment="center")
+    pick_col.button(
+        "ファイルから入力",
+        icon=":material/folder_open:",
+        use_container_width=True,
+        on_click=on_pick_file,
+        key="form_pick_file",
+        help="起動する .py / .exe を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
+        "ダイアログはこのPCの画面に開きます。",
+    )
+    note_col.caption("起動する .py / .exe を選ぶと、venv や uv も含めて推測して入力します。")
+    for level, note in st.session_state.get("form_notes", []):
+        if level == "error":
+            st.error(note, icon="⛔")
+        else:
+            st.info(note, icon="ℹ️")
+
     st.text_input("名前 *", key="form_name", placeholder="在庫チェッカー")
     left, right = st.columns(2)
     with left:
@@ -310,7 +430,15 @@ def render_tool_form() -> dict[str, Any]:
             key="form_health_mode",
             help="HTTP: ポートに応答するか / プロセス: 起動したプロセスが生きているか",
         )
-    st.text_input("作業ディレクトリ *", key="form_directory", placeholder=r"C:\dev\tool-a")
+    dir_col, dir_button_col = st.columns([8, 1.2], vertical_alignment="bottom")
+    dir_col.text_input("作業ディレクトリ *", key="form_directory", placeholder=r"C:\dev\tool-a")
+    dir_button_col.button(
+        ":material/folder:",
+        help="フォルダを選ぶ",
+        use_container_width=True,
+        on_click=on_pick_folder,
+        key="form_pick_folder",
+    )
     st.text_input(
         "起動コマンド *",
         key="form_command",
@@ -336,7 +464,7 @@ def render_tool_form() -> dict[str, Any]:
     )
     st.checkbox("まとめて起動の対象にする", key="form_autostart")
     st.text_area("説明", key="form_description", height=70)
-    return {
+    values = {
         "name": st.session_state["form_name"],
         "kind": st.session_state["form_kind"],
         "directory": st.session_state["form_directory"],
@@ -348,6 +476,8 @@ def render_tool_form() -> dict[str, Any]:
         "description": st.session_state["form_description"],
         "sort_order": st.session_state["form_sort_order"],
     }
+    render_command_preview(values)
+    return values
 
 
 def save_tool(
@@ -488,6 +618,113 @@ def log_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
         st.rerun()
 
 
+def render_process_card(process: ProcessInfo, port: int) -> None:
+    started = format_time(process.created_at)
+    st.markdown(
+        f"ポート **{port}** ／ PID **{process.pid}**（{process.name}）"
+        + (f" ／ 起動 {started}" if started else "")
+    )
+    st.code(process.command_line or "（コマンドラインを取得できませんでした）", language=None, wrap_lines=True)
+
+
+@st.dialog("ポートから特定して停止", width="large", on_dismiss=close_dialog)
+def port_stop_dialog(repository: ToolRepository) -> None:
+    """記録から特定できないツールを、ポートでLISTENしているプロセスから引き直して停止する。
+
+    強制終了なので、対象を画面に出してユーザーの確認を取ってから停止する（SPEC 6.3）。
+    """
+    target = get_target(repository)
+    if target is None or not target.port:
+        render_missing_target()
+        return
+
+    st.warning(
+        f"「{target.name}」は起動記録から対象プロセスを特定できませんでした"
+        "（TOOL NEXUSの外で起動された、または記録が古い）。"
+        f"ポート {target.port} で待ち受けているプロセスを探しました。",
+        icon="⚠️",
+    )
+    try:
+        owner = find_port_owner(take_snapshot(), target.port)
+    except ProcessQueryError as exc:
+        st.error(f"プロセス情報を取得できませんでした。{exc}", icon="⛔")
+        owner = None
+
+    if owner is None:
+        st.info(f"ポート {target.port} で待ち受けているプロセスは見つかりませんでした。既に停止しています。")
+        if st.button("閉じる", use_container_width=True, key="port_stop_close"):
+            close_dialog()
+            request_check()
+            st.rerun()
+        return
+
+    render_process_card(owner, target.port)
+    st.caption("このプロセスと子プロセスを強制終了します（ツール側の終了処理は走りません）。")
+    stop_col, cancel_col = st.columns(2)
+    if stop_col.button("停止する", type="primary", use_container_width=True, key="port_stop_submit"):
+        try:
+            # 直前に取得した起動時刻で照合してから停止する（取得後にPIDが入れ替わっていれば止めない）
+            stop(owner.pid, owner.created_at)
+        except ProcessNotIdentifiedError:
+            flash("対象のプロセスが入れ替わったため停止しませんでした。もう一度お試しください。", "error")
+        except StopError as exc:
+            flash(f"「{target.name}」を停止できませんでした。{exc}", "error")
+        else:
+            repository.clear_pid(int(target.id))
+            report_stopped(target)
+        close_dialog()
+        request_check()
+        st.rerun()
+    if cancel_col.button("キャンセル", use_container_width=True, key="port_stop_cancel"):
+        close_dialog()
+        st.rerun()
+
+
+def register_detected(detected: DetectedTool) -> None:
+    open_dialog(
+        "create",
+        overrides={
+            "form_name": detected.name,
+            "form_kind": KIND_STREAMLIT,
+            "form_directory": detected.directory,
+            "form_command": detected.process.command_line,
+            "form_port": str(detected.port),
+            "form_health_mode": default_health_mode(KIND_STREAMLIT),
+        },
+    )
+
+
+@st.dialog("起動中のStreamlitを検出", width="large", on_dismiss=close_dialog)
+def detect_dialog(repository: ToolRepository) -> None:
+    """このPCで動いている未登録の Streamlit を一覧し、登録フォームを開く（SPEC 6.6）。"""
+    try:
+        with st.spinner("プロセスを調べています…"):
+            found = detect_streamlit(
+                take_snapshot(), exclude_ports=repository.used_ports() | {TOOL_NEXUS_PORT}
+            )
+    except ProcessQueryError as exc:
+        st.error(f"プロセス情報を取得できませんでした。{exc}", icon="⛔")
+        found = []
+
+    if not found:
+        st.info("未登録の起動中Streamlitは見つかりませんでした。", icon="ℹ️")
+    for index, detected in enumerate(found):
+        with st.container(border=True):
+            render_process_card(detected.process, detected.port)
+            info_col, button_col = st.columns([5, 1.3], vertical_alignment="center")
+            info_col.caption(
+                f"作業ディレクトリ: {detected.directory}"
+                if detected.directory
+                else "作業ディレクトリを推測できませんでした。登録画面で入力してください。"
+            )
+            if button_col.button("登録…", key=f"detect_register_{index}", use_container_width=True):
+                register_detected(detected)
+
+    if st.button("閉じる", use_container_width=True, key="detect_close"):
+        close_dialog()
+        st.rerun()
+
+
 def render_dialogs(repository: ToolRepository, settings: dict[str, str]) -> None:
     dialog = st.session_state.get("dialog")
     if dialog == "create":
@@ -496,6 +733,10 @@ def render_dialogs(repository: ToolRepository, settings: dict[str, str]) -> None
         edit_dialog(repository, settings)
     elif dialog == "log":
         log_dialog(repository, settings)
+    elif dialog == "port_stop":
+        port_stop_dialog(repository)
+    elif dialog == "detect":
+        detect_dialog(repository)
 
 
 # ----------------------------------------------------------------------
@@ -559,7 +800,10 @@ def render_tool_row(
             if health.can_stop:
                 if st.button("停止", key=f"stop_{tool.id}", use_container_width=True):
                     with st.spinner("停止しています…"):
-                        stop_tool(repository, tool)
+                        handled = stop_tool(repository, tool)
+                    if not handled:
+                        # 記録から特定できない → ポートから引き直して確認を取る
+                        open_dialog("port_stop", tool)
                     request_check()
                     st.rerun(scope="fragment")
             elif st.button("起動", key=f"start_{tool.id}", type="primary", use_container_width=True):
@@ -712,9 +956,11 @@ def render_side_nav(repository: ToolRepository) -> None:
         st.caption(f"登録 {repository.count()} 件")
 
 
-def render_toolbar() -> None:
+def render_toolbar(repository: ToolRepository, settings: dict[str, str]) -> None:
     with st.container(key="tn-header"):
-        search_col, create_col = st.columns([9, 1.8], vertical_alignment="center")
+        search_col, bulk_col, detect_col, create_col = st.columns(
+            [9, 0.5, 0.5, 1.8], vertical_alignment="center"
+        )
     with search_col:
         st.text_input(
             "検索",
@@ -722,6 +968,23 @@ def render_toolbar() -> None:
             placeholder="名前 / ディレクトリ / コマンド / 説明 / ポート",
             label_visibility="collapsed",
         )
+    with bulk_col:
+        if st.button(
+            ":material/play_circle:",
+            help="まとめて起動（「まとめて起動の対象」のツールを起動。起動中のものは飛ばします）",
+            key="bulk_start",
+            use_container_width=True,
+        ):
+            with st.spinner("まとめて起動しています…"):
+                start_autostart_tools(repository, settings)
+    with detect_col:
+        if st.button(
+            ":material/radar:",
+            help="起動中のStreamlitを検出して登録",
+            key="open_detect",
+            use_container_width=True,
+        ):
+            open_dialog("detect")
     with create_col:
         if st.button("追加", icon=":material/add:", type="primary", use_container_width=True):
             open_dialog("create")
@@ -755,7 +1018,7 @@ def main() -> None:
         with nav_col:
             render_side_nav(repository)
         with main_col:
-            render_toolbar()
+            render_toolbar(repository, settings)
             render_tool_list(repository, settings)
         render_dialogs(repository, settings)
     except DatabaseError as exc:

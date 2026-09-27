@@ -89,7 +89,20 @@ _CSS = f"""
     padding: 0.1rem 0 0.5rem 0;
     margin-bottom: 0.9rem;
 }}
+/* 種別タブは文字幅に合わせた固定幅にし、残りを余白にする（比率配分だと「Streamlit」が省略される） */
+[class*="st-key-tn-tabs"] [data-testid="stHorizontalBlock"] {{
+    flex-wrap: nowrap;
+    gap: 0.4rem;
+}}
+[class*="st-key-tn-tabs"] [data-testid="stColumn"] {{
+    flex: 0 0 6.4rem !important;
+    min-width: 0 !important;
+}}
+[class*="st-key-tn-tabs"] [data-testid="stColumn"]:last-child {{
+    flex: 1 1 0 !important;
+}}
 [class*="st-key-tn-tabs"] .stButton > button {{
+    white-space: nowrap;
     border-radius: 6px 6px 0 0;
     border-bottom-width: 2px;
     font-size: 0.9rem;
@@ -324,9 +337,16 @@ _CSS = f"""
     padding: 0.25rem 0;
 }}
 
-/* ヘッダー: 検索 / 追加 */
+/* ヘッダー: 検索 / まとめて起動 / 検出 / 追加 */
 [class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(1) {{ flex: 1 1 0 !important; }}
-[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(2) {{ flex: 0 0 6.5rem !important; }}
+[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(2),
+[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(3) {{ flex: 0 0 2.3rem !important; }}
+[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(2) button,
+[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(3) button {{
+    width: 100%;
+    padding: 0.25rem 0;
+}}
+[class*="st-key-tn-header"] [data-testid="stColumn"]:nth-child(4) {{ flex: 0 0 6.5rem !important; }}
 
 /* 一覧の見出し: 件数 / 再チェック */
 [class*="st-key-tn-listhead"] [data-testid="stColumn"]:nth-child(1) {{ flex: 1 1 0 !important; }}
