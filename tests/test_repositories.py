@@ -7,9 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from constants import DEFAULT_SETTINGS, HEALTH_HTTP, HEALTH_NONE, HEALTH_PROCESS, KIND_EXE
+from constants import (
+    DEFAULT_SETTINGS,
+    HEALTH_HTTP,
+    HEALTH_NONE,
+    HEALTH_PROCESS,
+    KIND_EXE,
+    KIND_PYTHON,
+    KIND_STREAMLIT,
+    KIND_WEB,
+)
 from database import connect
-from models import ValidationError, build_tool, default_health_mode
+from models import ValidationError, build_tool, can_auto_assign_port, default_health_mode
 from repositories import DuplicatePortError, ToolNotFoundError, ToolRepository
 
 COMMAND = r".venv\Scripts\python.exe -m streamlit run app.py"
@@ -61,6 +70,33 @@ class TestBuildTool:
         assert default_health_mode(KIND_EXE) == HEALTH_PROCESS
         tool = make_tool(workdir, kind=KIND_EXE, port=None, command="tool.exe")
         assert tool.health_mode == HEALTH_PROCESS
+
+    @pytest.mark.parametrize(
+        ("kind", "mode"),
+        [(KIND_WEB, HEALTH_HTTP), (KIND_PYTHON, HEALTH_PROCESS), (KIND_EXE, HEALTH_PROCESS)],
+    )
+    def test_default_health_mode_by_kind(self, kind: str, mode: str) -> None:
+        assert default_health_mode(kind) == mode
+
+    def test_port_placeholder_requires_port(self, workdir: Path) -> None:
+        with pytest.raises(ValidationError, match=r"\{port\}"):
+            make_tool(
+                workdir, kind=KIND_PYTHON, command="python app.py --port {port}",
+                port=None, health_mode=HEALTH_PROCESS,
+            )
+
+    @pytest.mark.parametrize(
+        ("kind", "command", "expected"),
+        [
+            (KIND_STREAMLIT, "streamlit run app.py", True),
+            (KIND_WEB, "python -m flask run --port {port}", True),
+            (KIND_PYTHON, "python app.py --port {port}", True),
+            (KIND_WEB, "python -m flask run", False),
+            (KIND_EXE, "tool.exe", False),
+        ],
+    )
+    def test_can_auto_assign_port(self, kind: str, command: str, expected: bool) -> None:
+        assert can_auto_assign_port(kind, command) is expected
 
     def test_exe_with_explicit_http_still_requires_port(self, workdir: Path) -> None:
         with pytest.raises(ValidationError):

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from constants import KIND_EXE, KIND_STREAMLIT
+from constants import KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
 from process_utils import (
     LaunchError,
     PidStatus,
@@ -117,6 +117,33 @@ class TestBuildArgv:
     def test_empty_command_raises(self) -> None:
         with pytest.raises(LaunchError):
             build_argv("   ", kind=KIND_STREAMLIT, port=8502)
+
+    def test_port_placeholder_is_replaced_for_any_kind(self) -> None:
+        argv = build_argv(
+            "python -m flask --app app.py run --port {port} --url=http://127.0.0.1:{port}/",
+            kind=KIND_WEB,
+            port=8600,
+        )
+        assert argv == [
+            "python", "-m", "flask", "--app", "app.py", "run", "--port", "8600",
+            "--url=http://127.0.0.1:8600/",
+        ]
+
+    def test_port_placeholder_without_port_raises(self) -> None:
+        with pytest.raises(LaunchError, match="ポート"):
+            build_argv("python app.py --port {port}", kind=KIND_PYTHON, port=None)
+
+    def test_streamlit_placeholder_and_auto_port_do_not_duplicate(self) -> None:
+        argv = build_argv(
+            "streamlit run app.py --server.port {port}", kind=KIND_STREAMLIT, port=8502
+        )
+        assert argv.count("--server.port") == 1
+        assert argv[argv.index("--server.port") + 1] == "8502"
+
+    @pytest.mark.parametrize("kind", [KIND_WEB, KIND_PYTHON, KIND_EXE])
+    def test_non_streamlit_kinds_get_no_server_options(self, kind: str) -> None:
+        argv = build_argv("python app.py", kind=kind, port=8600)
+        assert argv == ["python", "app.py"]
 
     def test_unclosed_quote_raises_launch_error(self) -> None:
         with pytest.raises(LaunchError, match="解釈"):

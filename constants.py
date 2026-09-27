@@ -12,12 +12,17 @@ PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent
 DATA_DIR: Final[Path] = PROJECT_ROOT / "data"
 DATABASE_PATH: Final[Path] = DATA_DIR / "tool_nexus.sqlite3"
 
-# ツールの種別。streamlit のときだけ --server.* を自動付与する。
+# ツールの種別。フレームワークではなく TOOL NEXUS から見た動き方で分ける。
+# streamlit のときだけ --server.* を自動付与する。Flask / FastAPI は動き方が同じなので web。
 KIND_STREAMLIT: Final[str] = "streamlit"
+KIND_WEB: Final[str] = "web"
+KIND_PYTHON: Final[str] = "python"
 KIND_EXE: Final[str] = "exe"
 KIND_LABELS: Final[dict[str, str]] = {
     KIND_STREAMLIT: "Streamlit",
-    KIND_EXE: "その他",
+    KIND_WEB: "Web",
+    KIND_PYTHON: "Python",
+    KIND_EXE: "EXE",
 }
 KIND_VALUES: Final[tuple[str, ...]] = tuple(KIND_LABELS)
 
@@ -36,8 +41,13 @@ HEALTH_MODE_VALUES: Final[tuple[str, ...]] = tuple(HEALTH_MODE_LABELS)
 # exe はポートを持たないことが多いため、http の「ポート必須」を踏まないよう process にする。
 DEFAULT_HEALTH_MODE_BY_KIND: Final[dict[str, str]] = {
     KIND_STREAMLIT: HEALTH_HTTP,
+    KIND_WEB: HEALTH_HTTP,
+    KIND_PYTHON: HEALTH_PROCESS,
     KIND_EXE: HEALTH_PROCESS,
 }
+
+# 起動コマンド中でポートに置き換える文字列。含まれていれば自動割当の対象になる。
+PORT_PLACEHOLDER: Final[str] = "{port}"
 
 # ログ出力先が未指定のとき、作業ディレクトリ配下に作るファイル名。
 DEFAULT_LOG_FILENAME: Final[str] = "tool-nexus.log"

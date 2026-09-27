@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT
+from constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT, PORT_PLACEHOLDER
 
 POWERSHELL_TIMEOUT: float = 15.0
 TASKKILL_TIMEOUT: float = 15.0
@@ -92,6 +92,7 @@ def split_command(command: str) -> list[str]:
 def build_argv(command: str, *, kind: str, port: int | None) -> list[str]:
     """登録内容から起動用のargvを組み立てる（実行ファイルの解決は行わない）。
 
+    コマンド中の {port} は全種別で登録済みのポートに置き換える。
     streamlit のときだけ --server.* を付与し、コマンドに既に書かれていれば二重付与しない。
     """
     try:
@@ -100,6 +101,10 @@ def build_argv(command: str, *, kind: str, port: int | None) -> list[str]:
         raise LaunchError(f"起動コマンドを解釈できません: {exc}") from exc
     if not argv:
         raise LaunchError("起動コマンドが空です。")
+    if any(PORT_PLACEHOLDER in arg for arg in argv):
+        if not port:
+            raise LaunchError(f"起動コマンドに {PORT_PLACEHOLDER} がありますが、ポートが登録されていません。")
+        argv = [arg.replace(PORT_PLACEHOLDER, str(int(port))) for arg in argv]
     if kind != KIND_STREAMLIT:
         return argv
 

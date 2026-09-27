@@ -17,6 +17,7 @@ from constants import (
     MAX_NAME_LENGTH,
     MAX_PORT,
     MIN_PORT,
+    PORT_PLACEHOLDER,
 )
 from process_utils import split_command
 
@@ -102,6 +103,15 @@ def tool_to_params(tool: Tool) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 # 入力の検証・正規化
 # ----------------------------------------------------------------------
+def can_auto_assign_port(kind: str, command: str) -> bool:
+    """自動割当してよいか。割り当てたポートで待ち受けることが保証できる場合だけ True。
+
+    streamlit は --server.port を付与し、{port} を含むコマンドは起動時に置き換えるため保証できる。
+    それ以外に振ると、実際には待ち受けないまま監視され続ける。
+    """
+    return kind == KIND_STREAMLIT or PORT_PLACEHOLDER in (command or "")
+
+
 def default_health_mode(kind: str) -> str:
     """種別に応じた死活監視モードの既定値（登録フォームの初期値に使う）。"""
     return DEFAULT_HEALTH_MODE_BY_KIND.get(kind, HEALTH_HTTP)
@@ -203,6 +213,11 @@ def build_tool(
     normalized_kind = normalize_kind(kind)
     normalized_mode = normalize_health_mode(health_mode, normalized_kind)
     normalized_port = normalize_port(port)
+    normalized_command = normalize_command(command)
+    if PORT_PLACEHOLDER in normalized_command and normalized_port is None:
+        raise ValidationError(
+            f"起動コマンドに {PORT_PLACEHOLDER} があるため、ポートが必要です。"
+        )
     if normalized_mode == HEALTH_HTTP and normalized_port is None:
         raise ValidationError(
             "死活監視モードがHTTPのときはポートが必要です。"
@@ -214,7 +229,7 @@ def build_tool(
         name=normalize_name(name),
         kind=normalized_kind,
         directory=normalize_directory(directory, check_exists=check_directory),
-        command=normalize_command(command),
+        command=normalized_command,
         port=normalized_port,
         health_mode=normalized_mode,
         log_path=(log_path or "").strip().strip('"'),
