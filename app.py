@@ -39,8 +39,8 @@ from health import (
     parse_interval,
     probe_all,
 )
-from models import Tool, ValidationError, build_tool, default_health_mode
-from port_utils import is_port_free
+from models import Tool, ValidationError, build_tool, can_auto_assign_port, default_health_mode
+from port_utils import PortError, assign_port, is_port_free
 from process_utils import (
     LaunchError,
     PidStatus,
@@ -320,7 +320,13 @@ def render_tool_form() -> dict[str, Any]:
     )
     left, right = st.columns(2)
     with left:
-        st.text_input("ポート", key="form_port", placeholder="8502")
+        st.text_input(
+            "ポート",
+            key="form_port",
+            placeholder="空欄なら自動割当",
+            help="Streamlit、または起動コマンドに {port} を含む場合は、空欄なら保存時に空きポートを割り当てます。"
+            "編集で空欄にすると振り直します（既存のリンクは切れます）。",
+        )
     with right:
         st.number_input("表示順", key="form_sort_order", step=1)
     st.text_input(
@@ -344,11 +350,31 @@ def render_tool_form() -> dict[str, Any]:
     }
 
 
-def save_tool(repository: ToolRepository, values: dict[str, Any], tool_id: int | None) -> Tool | None:
-    """検証して保存する。失敗したらダイアログ内にエラーを出して None を返す。"""
+def save_tool(
+    repository: ToolRepository,
+    settings: dict[str, str],
+    values: dict[str, Any],
+    tool_id: int | None,
+) -> tuple[Tool, int | None] | None:
+    """自動割当 → 検証 → 保存の順に行い、(保存したツール, 自動割当したポート) を返す。
+
+    ポートの自動割当は起動時ではなく保存時に行い、DBに残す
+    （起動のたびに変わるとブックマークやLIST NEXUSのリンクが壊れるため）。
+    失敗したらダイアログ内にエラーを出して None を返す。
+    """
+    values = dict(values)
+    assigned: int | None = None
     try:
+        if not str(values.get("port") or "").strip() and can_auto_assign_port(
+            str(values.get("kind") or ""), str(values.get("command") or "")
+        ):
+            assigned = assign_port(settings, repository.used_ports())
+            values["port"] = assigned
         tool = build_tool(id=tool_id, **values)
-        return repository.update(tool) if tool_id else repository.create(tool)
+        saved = repository.update(tool) if tool_id else repository.create(tool)
+        return saved, assigned
+    except PortError as exc:
+        st.error(f"ポートを自動で割り当てられませんでした。{exc}", icon="⛔")
     except ValidationError as exc:
         st.error(str(exc), icon="⛔")
     except DuplicatePortError as exc:
@@ -360,13 +386,15 @@ def save_tool(repository: ToolRepository, values: dict[str, Any], tool_id: int |
 
 
 @st.dialog("ツールを追加", width="large", on_dismiss=close_dialog)
-def create_dialog(repository: ToolRepository) -> None:
+def create_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
     values = render_tool_form()
     save_col, cancel_col = st.columns(2)
     if save_col.button("登録", type="primary", use_container_width=True, key="create_submit"):
-        created = save_tool(repository, values, None)
-        if created is not None:
-            flash(f"「{created.name}」を登録しました。")
+        result = save_tool(repository, settings, values, None)
+        if result is not None:
+            created, assigned = result
+            suffix = f"ポート {assigned} を割り当てました。" if assigned else ""
+            flash(f"「{created.name}」を登録しました。{suffix}")
             close_dialog()
             st.rerun()
     if cancel_col.button("キャンセル", use_container_width=True, key="create_cancel"):
@@ -387,7 +415,7 @@ def render_missing_target() -> None:
 
 
 @st.dialog("ツールを編集", width="large", on_dismiss=close_dialog)
-def edit_dialog(repository: ToolRepository) -> None:
+def edit_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
     target = get_target(repository)
     if target is None:
         render_missing_target()
@@ -396,9 +424,16 @@ def edit_dialog(repository: ToolRepository) -> None:
     values = render_tool_form()
     save_col, cancel_col = st.columns(2)
     if save_col.button("更新", type="primary", use_container_width=True, key="edit_submit"):
-        updated = save_tool(repository, values, target.id)
-        if updated is not None:
+        result = save_tool(repository, settings, values, target.id)
+        if result is not None:
+            updated, assigned = result
             flash(f"「{updated.name}」を更新しました。")
+            if assigned and target.port and assigned != target.port:
+                flash(
+                    f"ポートを {target.port} から {assigned} に振り直しました。"
+                    "既存のブックマークやLIST NEXUSに登録したリンクは切れるため、更新してください。",
+                    "warning",
+                )
             close_dialog()
             st.rerun()
     if cancel_col.button("キャンセル", use_container_width=True, key="edit_cancel"):
@@ -456,9 +491,9 @@ def log_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
 def render_dialogs(repository: ToolRepository, settings: dict[str, str]) -> None:
     dialog = st.session_state.get("dialog")
     if dialog == "create":
-        create_dialog(repository)
+        create_dialog(repository, settings)
     elif dialog == "edit":
-        edit_dialog(repository)
+        edit_dialog(repository, settings)
     elif dialog == "log":
         log_dialog(repository, settings)
 
