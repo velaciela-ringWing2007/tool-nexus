@@ -43,14 +43,16 @@ tool-nexus/
 ├─ launch_assist.py      … ファイル選択と起動方式の推測（6.9）
 ├─ styles.py
 ├─ constants.py
+├─ settings_utils.py     … 動作設定の検証（8.2）
+├─ backup.py             … JSONバックアップと復元（7.3）
 ├─ requirements.txt
 ├─ README.md
 ├─ SPEC.md
 ├─ .gitignore
 ├─ .gitattributes
 ├─ .streamlit/config.toml
-├─ setup.bat
-├─ start-tool-nexus.bat
+├─ setup.bat / setup.sh
+├─ start-tool-nexus.bat / start-tool-nexus.sh
 ├─ data/
 │  └─ .gitkeep
 └─ tests/
@@ -598,7 +600,39 @@ CREATE TABLE IF NOT EXISTS settings (
 | `health_timeout` | `2.0` | ヘルスチェックのタイムアウト（秒） |
 | `reserved_ports` | `8501` | 自動割当から常に除外するポート（カンマ区切り）。TOOL NEXUS自身の8499は設定に関わらず常に除外 |
 
-ポート範囲は保存時に `low <= high` かつ両方 `1024-49151` を検証する（6.5）。
+ポート範囲は保存時に `low <= high` かつ両方 `1024-49151` を検証する（6.5）。その他の検証は 8.2。
+
+### 7.3 バックアップ（JSON）
+
+```json
+{
+  "app": "TOOL NEXUS",
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-27T21:00:00+09:00",
+  "settings": { "health_interval": "60s", "reserved_ports": "8501", "...": "..." },
+  "tools": [
+    {
+      "name": "在庫チェッカー", "kind": "streamlit", "directory": "C:\\dev\\tool-a",
+      "command": ".venv\\Scripts\\python.exe -m streamlit run app.py", "port": 8502,
+      "healthMode": "http", "logPath": "", "autostart": true, "description": "", "sortOrder": 0
+    }
+  ]
+}
+```
+
+* 含めるのは**設定だけ**。起動記録（`last_pid` など）と内部IDは含めない（別PCや別時点では意味を持たないため）
+* 復元時は各ツールを 6.1 と同じ検証に通す。ただし作業ディレクトリの存在確認はしない
+  （別PCのバックアップを持ち込むことがあるため。起動時に確認される）
+* 復元の方法は2つ
+
+  | 方法 | 動作 |
+  | --- | --- |
+  | 追加（既定） | 既存を残して追加する。**名前と作業ディレクトリが同じもの**は重複とみなして飛ばす。ポートが既存と衝突するものも飛ばす |
+  | 置き換え | 既存のツールをすべて削除してから復元する。確認のチェックを入れたときだけ実行できる |
+
+* 設定は「設定も復元する」にチェックを入れたときだけ上書きする（検証を通ったキーだけ）
+* 取り込めなかった行は、理由とともに一覧で表示する
+* `schemaVersion` が未知（今より新しい）の場合は復元しない
 
 ---
 
@@ -655,6 +689,26 @@ CREATE TABLE IF NOT EXISTS settings (
 * **動作設定** … ヘルス間隔、ポート範囲、ログ既定パス
 * **データ** … バックアップ（JSON）、復元、DBの場所
 
+#### ツールの管理
+
+* `st.data_editor` の表で「表示順」「まとめて起動の対象」を編集し、「選択」列で複数行を選んで削除する
+* 行は**非表示のID列で突き合わせる**（並べ替え後に位置で照合すると、編集が別の行に適用される。8.3）
+* まとめて削除は、件数と名前を表示し、確認のチェックを入れてから実行する。起動中のツールは停止されない
+
+#### 動作設定の検証
+
+保存時に検証し、不正な値は保存しない（エラーを表示する）。
+
+| キー | 検証 |
+| --- | --- |
+| `health_interval` | `60s` / `2m` / `90` 形式。5秒〜1時間。秒に正規化して `60s` の形で保存する |
+| `health_timeout` | 0.2〜30秒の数値 |
+| `port_range_low` / `port_range_high` | 6.5 のとおり（`low <= high`、両方 1024〜49151） |
+| `reserved_ports` | カンマ区切りの 1〜65535 の整数。重複は除いて昇順で保存する |
+| `default_log_dir` | 空、または絶対パス（相対パスはどこ基準か曖昧なため不可）。存在しなければ起動時に作る |
+
+範囲を狭めても、既に登録済みのポートは変更しない（ブックマークを壊さないため）。
+
 ---
 
 ## 9. セキュリティ要件
@@ -707,6 +761,14 @@ pytestで以下を検証する。UIの自動テストは必須としない。
 * processモード: `verify_pid` を使うこと（照合ロジックのテストは process_utils に集約）
 * noneモード: 常に不明を返す
 * 「起動中…」の導出: 30秒以内 / 30秒超で「起動できていない可能性」/ 記録が古い
+
+### settings_utils
+* 各設定値の検証と正規化（8.2 の表）、不正値で保存しないこと
+
+### backup
+* エクスポートに起動記録と内部IDを含めないこと、往復（エクスポート → 復元）で設定が一致すること
+* 追加モードの重複判定（名前＋作業ディレクトリ、ポートの衝突）、置き換えモード
+* 不正な行の報告、未知の `schemaVersion` の拒否、壊れたJSON
 
 ### repositories
 * 一時SQLite DBを用いたCRUD
@@ -772,10 +834,9 @@ LIST NEXUS（Streamlit 1.60）で計測した値。
 * GitHub Actions（Windows / Ubuntu）
 
 ### Phase 4
-* 設定画面
-* processモード / exe対応
+* 設定画面（ツールの管理・検出・動作設定・データ）
 * バックアップと復元
-* README、setup.bat、start-tool-nexus.bat
+* README、setup.bat / start-tool-nexus.bat、setup.sh / start-tool-nexus.sh
 
 ---
 
