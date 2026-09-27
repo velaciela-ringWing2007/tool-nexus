@@ -149,12 +149,19 @@ LIST NEXUSと同じサイバーパンク風ダークテーマ、同じ画面構�
 | 自動起動 | | 「まとめて起動」の対象にするか |
 | 説明 | | 自由記述 |
 
+登録時の検証：
+
+* `health_mode == "http"` のときはポート必須（未入力はエラー）。
+  黙って `process` に切り替えることはしない（ユーザーが気づかないまま監視の強度が落ちるため）
+* 登録フォームで種別を `exe` にしたら、死活監視モードの既定値を `process` にする
+  （そもそも上記のエラーを踏まないようにする）
+
 ### 6.2 起動
 
 `subprocess.Popen` でデタッチ起動する。
 
 ```python
-argv = shlex.split(command, posix=False)   # Windowsのパスを壊さない
+argv = split_command(command)
 if port and "--server.port" not in argv:
     argv += ["--server.port", str(port)]
 if "--server.address" not in argv:
@@ -168,6 +175,22 @@ proc = subprocess.Popen(
     stdout=log_file, stderr=subprocess.STDOUT,
     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
 )
+```
+
+起動直後にPIDの起動時刻（`CreationDate`）を取得し、`last_pid` と
+`last_pid_created_at` に保存する（6.3・6.4の照合に使う）。
+
+#### コマンド文字列の分解
+
+`posix=True` にすると `C:\dev\x` のバックスラッシュが消えるため、`posix=False` を使う。
+ただし `posix=False` はトークン両端のクォートを残す
+（`"C:\Program Files\...\python.exe"` が `"` 付きのままになり、`Popen` が実行ファイルを見つけられない）。
+そのため各トークンの両端のクォートを外す。
+
+```python
+def split_command(command: str) -> list[str]:
+    tokens = shlex.split(command, posix=False)
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 ```
 
 必ず守ること：
@@ -196,6 +219,21 @@ bash(27208) ─ python(42288)   ← Popen.pid が返すのはこれ。ポート�
 taskkill /PID <親PID> /T /F
 ```
 
+**停止の前に、PIDの起動時刻を必ず照合する。**
+
+ツールが落ちた後にOSがPIDを再利用していると、`taskkill /T /F` は
+無関係なプロセスをツリーごと強制終了してしまう。
+そのため `taskkill` を実行する前に、`last_pid` の現在の起動時刻が
+`last_pid_created_at` と一致することを確認する。
+
+* 一致した場合のみ `taskkill` を実行する
+* 一致しない・PIDが存在しない・起動時刻が取れない場合は停止せず、
+  「対象プロセスを特定できませんでした」と表示する。
+  その上で、ポートから（6.6の検出と同じ方法で）プロセスを引き直すか、手動対応に倒す
+
+この照合は `process` モードの死活監視（6.4）とまったく同じ仕組みであり、
+共通関数 `verify_pid(pid, created_at)` として1か所に実装し、テストも1か所にまとめる。
+
 停止後はヘルスチェックまたはポート確認で解放を確認する。
 
 ### 6.4 状態表示（死活監視）
@@ -210,7 +248,27 @@ taskkill /PID <親PID> /T /F
 1分間隔・10ツールでも1分あたり12ms程度であり、負荷は無視できる。
 
 `process` モードではPIDの再利用による誤判定を避けるため、
-起動時に `CreationDate` を保存し、判定時に一致を確認する。
+起動時に `CreationDate` を `last_pid_created_at` へ保存し、判定時に一致を確認する
+（6.3の停止前照合と共通の `verify_pid` を使う）。
+
+`Get-CimInstance Win32_Process` の `CreationDate` はCIM datetime
+（例: `20260927134501.123456+540`）であり、取得方法や環境によって文字列表現が揺れる。
+**保存・比較ともに秒精度のISO 8601（例: `2026-09-27T13:45:01+09:00`）に正規化してから一致判定する。**
+生の文字列同士を直接比較すると偽陰性（生きているのに停止扱い、停止できない）が出る。
+
+#### 「起動中…」の判定
+
+状態はDBに保存しない（7.1）。「起動中…」は `last_started_at` から導出する。
+`last_started_at` は状態ではなく記録なので、この方針と矛盾しない。
+
+| 条件 | 表示 |
+| --- | --- |
+| ヘルス通過 | 起動中 |
+| ヘルス未通過 かつ `last_started_at` から30秒以内 | 起動中…（黄） |
+| ヘルス未通過 かつ 30秒超（直近に起動操作あり） | 「起動できていない可能性があります」＋ログを開く導線 |
+| ヘルス未通過 かつ 起動操作の記録が古い / 無い | 停止 |
+
+30秒を超えても「起動中…」のまま無言で回り続けることはしない。
 
 #### 自動更新
 
@@ -244,11 +302,14 @@ def render_status(tools):
 既定の割当範囲は **8500-8999**（設定で変更可能）。
 空き確認は実際に `bind()` して行う。
 
+候補を抽出（サンプリング）せず、範囲内の未使用ポートを全件シャッフルして順に試す。
+サンプリングは範囲が狭いと `ValueError` になり、また「空きがあるのに見つからない」原因にもなる。
+
 ```python
 def pick_free_port(used: set[int], low: int = 8500, high: int = 8999) -> int:
-    for port in random.sample(range(low, high + 1), 100):
-        if port in used:
-            continue
+    candidates = [p for p in range(low, high + 1) if p not in used]
+    random.shuffle(candidates)
+    for port in candidates:
         with socket.socket() as sock:
             try:
                 sock.bind(("127.0.0.1", port))
@@ -257,6 +318,11 @@ def pick_free_port(used: set[int], low: int = 8500, high: int = 8999) -> int:
                 continue
     raise PortError("空きポートが見つかりませんでした")
 ```
+
+割当範囲の設定を保存するときに検証する：
+
+* `low <= high`
+* 両方が `1024-49151` の範囲内（49152以降はWindowsの動的ポート範囲なので不可）
 
 ### 6.6 起動中ツールの検出とワンクリック登録
 
@@ -278,7 +344,7 @@ Get-NetTCPConnection -State Listen                          # PID → ポート
 既に起動しているものは飛ばす（二重起動しない）。
 
 起動は非同期に見えるが、Streamlitの起動には数秒かかるため、
-起動直後は「起動中…」と表示し、ヘルスが通ったら「起動中」に切り替える。
+起動直後は「起動中…」と表示し、ヘルスが通ったら「起動中」に切り替える（判定は6.4）。
 
 ### 6.8 開く・ログ
 
@@ -305,6 +371,7 @@ CREATE TABLE IF NOT EXISTS tools (
     description TEXT NOT NULL DEFAULT '',
     sort_order INTEGER NOT NULL DEFAULT 0,
     last_pid INTEGER,
+    last_pid_created_at TEXT,                     -- 秒精度ISO 8601に正規化
     last_started_at TEXT,
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
@@ -315,6 +382,9 @@ CREATE TABLE IF NOT EXISTS tools (
 **状態（起動中かどうか）をDBに保存しない。**
 保存した瞬間から嘘になる（クラッシュしてもDBは「起動中」のまま）。
 現在の状態は毎回ヘルスチェックで取得し、DBには設定と履歴だけを持つ。
+
+`last_pid` と `last_pid_created_at` は常に対で保存・消去する。
+PID単体では再利用を見分けられないため、片方だけを信用しない。
 
 `port` をNULL許容にし、`health_mode` を最初から列として持つこと。
 この2つがあれば、後からexe対応を足しても移行が不要になる。
@@ -337,6 +407,8 @@ CREATE TABLE IF NOT EXISTS settings (
 | `port_range_high` | `8999` | 自動割当の上限 |
 | `default_log_dir` | 空 | 空ならツールの作業ディレクトリ配下 |
 | `health_timeout` | `2.0` | ヘルスチェックのタイムアウト（秒） |
+
+ポート範囲は保存時に `low <= high` かつ両方 `1024-49151` を検証する（6.5）。
 
 ---
 
@@ -386,22 +458,34 @@ pytestで以下を検証する。UIの自動テストは必須としない。
 * 登録済みポートを避ける
 * 範囲外を返さない
 * 空きが無い場合に例外を送出する
+* 範囲が100未満でも動作すること（範囲内の空きが1つだけでも見つけること）
+* 範囲設定の検証（`low > high`、1024未満、49152以上を拒否）
 
 ### process_utils
 * コマンド文字列の分解（Windowsのパスが壊れないこと）
+  * 空白入りのクォート付きパス `"C:\Program Files\Python\python.exe" -m streamlit run app.py`
+  * クォート無しのバックスラッシュパス（バックスラッシュが残ること）
+  * 引数側に空白が含まれる場合
+  * 空文字・空白のみ
 * `--server.port` の自動付与、および二重付与しないこと
 * 種別が `exe` のときに `--server.*` を付与しないこと
 * 起動コマンドの組み立て（実際にプロセスは起こさず、argvを検証する）
+* `CreationDate` の正規化（CIM datetime・表現揺れを秒精度ISO 8601へ）
+* `verify_pid`: 一致 / PID不在 / 起動時刻の不一致（PID再利用）/ 起動時刻が取れない
+* 停止: 照合が取れない場合に `taskkill` を実行しないこと
 
 ### health
 * HTTPモード: 応答する / しない / タイムアウト
-* processモード: PID存在、PID再利用の検出（起動時刻の不一致）
+* processモード: `verify_pid` を使うこと（照合ロジックのテストは process_utils に集約）
 * noneモード: 常に不明を返す
+* 「起動中…」の導出: 30秒以内 / 30秒超で「起動できていない可能性」/ 記録が古い
 
 ### repositories
 * 一時SQLite DBを用いたCRUD
 * ポート重複の検出
 * 設定値の読み書きと既定値
+* 検証: `http` モードでポート未入力はエラー
+* `last_pid` と `last_pid_created_at` を対で保存・消去すること
 
 ---
 
