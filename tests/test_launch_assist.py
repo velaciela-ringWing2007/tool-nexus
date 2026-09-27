@@ -9,8 +9,16 @@ from pathlib import Path
 import pytest
 
 from tool_nexus import osdep
-
-from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
+from tool_nexus.core.constants import (
+    HEALTH_HTTP,
+    HEALTH_PROCESS,
+    KIND_EXE,
+    KIND_PYTHON,
+    KIND_STREAMLIT,
+    KIND_WEB,
+)
+from tool_nexus.process.base import ProcessQueryError
+from tool_nexus.process.control import split_command
 from tool_nexus.process.launch_assist import (
     AssistError,
     detect_framework,
@@ -21,8 +29,6 @@ from tool_nexus.process.launch_assist import (
     suggest_from_file,
     venv_python,
 )
-from tool_nexus.process.base import ProcessQueryError
-from tool_nexus.process.control import split_command
 
 VENV_PY = str(Path(".venv") / "Scripts" / "python.exe")
 

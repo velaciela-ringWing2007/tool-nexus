@@ -1,4 +1,4 @@
-"""settings_utils のテスト."""
+"""tool_nexus.core.settings のテスト."""
 
 from __future__ import annotations
 

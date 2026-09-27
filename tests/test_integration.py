@@ -16,11 +16,11 @@ from typing import Callable
 import pytest
 
 from tool_nexus import osdep
-from tool_nexus.process import control as pu
 from tool_nexus.core.constants import KIND_STREAMLIT, KIND_WEB
+from tool_nexus.core.ports import is_port_free, pick_free_port
+from tool_nexus.process import control as pu
 from tool_nexus.process.health import check_http
 from tool_nexus.process.launch_assist import quote
-from tool_nexus.core.ports import is_port_free, pick_free_port
 
 pytestmark = pytest.mark.integration
 

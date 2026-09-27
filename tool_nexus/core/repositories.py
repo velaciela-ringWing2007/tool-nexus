@@ -263,7 +263,7 @@ class ToolRepository:
         return self.get_settings()[key]
 
     def set_setting(self, key: str, value: str) -> None:
-        """設定値を保存する。値の妥当性は呼び出し側で検証する（settings_utils）。"""
+        """設定値を保存する。値の妥当性は呼び出し側で検証する（core.settings）。"""
         self.set_settings({key: value})
 
     def set_settings(self, values: dict[str, str]) -> None:

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from tool_nexus import osdep
 from tool_nexus.core.constants import (
     KIND_EXE,
     KIND_PYTHON,
@@ -24,7 +25,6 @@ from tool_nexus.core.constants import (
     KIND_WEB,
     PORT_PLACEHOLDER,
 )
-from tool_nexus import osdep
 from tool_nexus.core.models import default_health_mode
 from tool_nexus.process.base import ProcessQueryError
 
@@ -244,7 +244,7 @@ def suggest_from_file(
 
 
 # ----------------------------------------------------------------------
-# ダイアログ（OS標準。platform_ops 経由）
+# ダイアログ（OS標準。osdep 経由）
 # ----------------------------------------------------------------------
 def _initial_dir(value: str | None) -> str | None:
     if not value:

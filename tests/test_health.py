@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_NONE, HEALTH_PROCESS, KIND_EXE, KIND_STREAMLIT
+from tool_nexus.core.models import Tool
 from tool_nexus.core.settings import parse_interval
+from tool_nexus.process.control import ProcessQueryError
 from tool_nexus.process.health import (
     Status,
     ToolHealth,
@@ -20,8 +22,6 @@ from tool_nexus.process.health import (
     probe,
     probe_all,
 )
-from tool_nexus.core.models import Tool
-from tool_nexus.process.control import ProcessQueryError
 
 JST = timezone(timedelta(hours=9))
 NOW = datetime(2026, 9, 27, 14, 0, 0, tzinfo=JST)
@@ -107,7 +107,7 @@ class TestCheckHttp:
 
 
 # ----------------------------------------------------------------------
-# processモード（照合ロジック自体のテストは test_process_utils の verify_pid に集約）
+# processモード（照合ロジック自体のテストは test_control の verify_pid に集約）
 # ----------------------------------------------------------------------
 class TestCheckProcess:
     def test_alive(self) -> None:

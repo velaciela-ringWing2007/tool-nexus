@@ -1,4 +1,4 @@
-"""port_utils のテスト."""
+"""tool_nexus.core.ports のテスト."""
 
 from __future__ import annotations
 

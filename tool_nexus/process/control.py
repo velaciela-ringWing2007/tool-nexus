@@ -1,7 +1,7 @@
 """プロセスの起動・停止・照合・探索（OSに依存しない部分）.
 
 OSに依存する処理（プロセス情報の取得、子ごとの停止、起動フラグ、ファイル選択）は
-platform_ops 経由で os_windows / os_linux に委ねる（SPEC 3.2）。
+osdep 経由で osdep.windows / osdep.linux に委ねる（SPEC 3.2）。
 subprocess は常にリスト形式・shell=False で実行する。
 
 注意: Popen.pid は親プロセスであり、ポートを持つのは子プロセスである（Windows の venv）。
@@ -34,7 +34,7 @@ from tool_nexus.process.base import (
     normalize_creation_date,
 )
 
-# process_types の例外・型も、呼び出し側はこのモジュールから import できる
+# process.base の例外・型も、呼び出し側はこのモジュールから import できる
 __all__ = [
     "CreationDateLookup", "DetectedTool", "LaunchError", "LaunchResult", "PidStatus",
     "ProcessInfo", "ProcessNotIdentifiedError", "ProcessQueryError", "Snapshot", "StopError",

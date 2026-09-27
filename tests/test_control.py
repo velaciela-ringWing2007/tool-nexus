@@ -1,4 +1,4 @@
-"""process_utils のテスト.
+"""tool_nexus.process.control のテスト.
 
 実際にはプロセスを起こさず、argv と呼び出し内容を検証する。
 OSに依存する部分（PowerShell / taskkill / /proc）のテストは test_os_windows / test_os_linux にある。

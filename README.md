@@ -176,23 +176,40 @@ python -m pytest
 
 ## ソース構成
 
+```text
+app.py                     … 起動の入口（streamlit run app.py）
+tool_nexus/
+├─ core/                   … 業務の中心（UI・OSに依存しない）
+├─ process/                … プロセスの起動・停止・監視（OSに依存しない部分）
+├─ osdep/                  … OS依存機能（Windows / Linux）
+└─ ui/                     … Streamlit の画面
+```
+
+依存の向きは `ui → process → osdep`、`ui / process → core` の一方向です（core は他に依存しません）。
+
 | ファイル | 責務 |
 | --- | --- |
-| `app.py` | Streamlit UI（一覧・ダイアログ・設定画面） |
-| `styles.py` | CSSとHTML片の生成（ユーザー入力は必ずエスケープ） |
-| `health.py` | 死活監視と、表示用の状態（起動中… など）の導出 |
-| `process_utils.py` | 起動・停止・PID照合・起動中ツールの検出（OSに依存しない部分） |
-| `platform_ops.py` | OS依存機能の切り替え |
-| `os_windows.py` / `os_linux.py` | OS別の実装（PowerShell・taskkill / `/proc`・シグナル、ファイル選択ダイアログ） |
-| `process_types.py` | プロセス関連の例外・データ型・起動時刻の正規化 |
-| `launch_assist.py` | ファイル選択と起動方式の推測 |
-| `port_utils.py` | 空きポートの割当とポート設定の検証 |
-| `settings_utils.py` | 動作設定の検証 |
-| `backup.py` | JSONバックアップと復元 |
-| `repositories.py` | tools / settings テーブルへのデータアクセス |
-| `models.py` | データモデルと入力検証 |
-| `database.py` | SQLite接続、スキーマ初期化、トランザクション |
-| `constants.py` | 共通定数 |
+| `core/constants.py` | 共通定数 |
+| `core/database.py` | SQLite接続、スキーマ初期化、トランザクション |
+| `core/models.py` | データモデルと入力検証 |
+| `core/repositories.py` | tools / settings テーブルへのデータアクセス |
+| `core/ports.py` | 空きポートの割当とポート設定の検証 |
+| `core/settings.py` | 動作設定の検証 |
+| `core/backup.py` | JSONバックアップと復元 |
+| `process/base.py` | プロセス関連の例外・データ型・起動時刻の正規化 |
+| `process/control.py` | 起動・停止・PID照合・起動中ツールの検出 |
+| `process/health.py` | 死活監視と、表示用の状態（起動中… など）の導出 |
+| `process/launch_assist.py` | ファイル選択と起動方式の推測 |
+| `osdep/__init__.py` | 実行中のOSに応じて `windows` / `linux` を選ぶ |
+| `osdep/windows.py` / `osdep/linux.py` | OS別の実装（PowerShell・taskkill / `/proc`・シグナル、ファイル選択ダイアログ） |
+| `ui/styles.py` | CSSとHTML片の生成（ユーザー入力は必ずエスケープ） |
+| `ui/state.py` | session_state・通知・ダイアログの開閉・画面の切り替え |
+| `ui/actions.py` | 起動・停止・まとめて起動 |
+| `ui/dialogs.py` | 登録・編集・ログ・ポートからの停止・検出のダイアログ |
+| `ui/tool_list.py` | ツール一覧（フラグメント） |
+| `ui/layout.py` | 上部バー・左ナビ・ツールバー |
+| `ui/settings_view.py` | 設定画面 |
+| `ui/main.py` | 画面全体の組み立て |
 
 ## 既知の制約
 
@@ -220,6 +237,10 @@ python -m pytest
 * **Linux では終了した子がゾンビとして残る**。ゾンビも起動時刻が同じで「生きている」と誤判定されるため、回収し、状態 `Z` は存在しない扱いにします
 * **一覧はフラグメントで3秒ごとに描き直し、ヘルスチェックは必要なときだけ行う**。更新間隔をその場で切り替える方式は、前回の描画が消えずに残りました
 * 1行のウィジェットは3個（起動/停止・ログ・編集）に抑え、「開く」は素のアンカーで描いています（LIST NEXUS の実測に基づく）
+
+## ライセンス
+
+MIT License です。詳細は [LICENSE](LICENSE) を参照してください。
 
 ## トラブルシューティング
 

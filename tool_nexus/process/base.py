@@ -1,6 +1,6 @@
 """プロセス操作で共有する例外・データ型・起動時刻の正規化（OSに依存しない土台）.
 
-OS別の実装（os_windows / os_linux）と process_utils の両方から参照される。
+OS別の実装（osdep.windows / osdep.linux）と process.control の両方から参照される。
 循環 import を避けるため、このモジュールは他のプロジェクト内モジュールに依存しない。
 """
 

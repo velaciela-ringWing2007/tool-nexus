@@ -20,7 +20,7 @@ fi
 .venv/bin/python -m pip install -r requirements.txt
 
 echo "データベースを初期化しています..."
-.venv/bin/python -c "from constants import DATABASE_PATH; from repositories import ToolRepository; ToolRepository(DATABASE_PATH).initialize(); print('OK:', DATABASE_PATH)"
+.venv/bin/python -c "from tool_nexus.core.constants import DATABASE_PATH; from tool_nexus.core.repositories import ToolRepository; ToolRepository(DATABASE_PATH).initialize(); print('OK:', DATABASE_PATH)"
 
 if ! command -v zenity >/dev/null 2>&1 && ! command -v kdialog >/dev/null 2>&1; then
     echo

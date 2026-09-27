@@ -1,4 +1,4 @@
-"""os_linux のテスト.
+"""tool_nexus.osdep.linux のテスト.
 
 一時ディレクトリに疑似 /proc を作って読ませるため、Windows 上でも実行できる。
 シグナル送信はフェイクに差し替える。実プロセスでの確認は test_linux_integration にある。

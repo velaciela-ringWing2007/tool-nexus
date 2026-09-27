@@ -34,7 +34,7 @@ if errorlevel 1 (
 )
 
 echo データベースを初期化しています...
-".venv\Scripts\python.exe" -c "from constants import DATABASE_PATH; from repositories import ToolRepository; ToolRepository(DATABASE_PATH).initialize(); print('OK:', DATABASE_PATH)"
+".venv\Scripts\python.exe" -c "from tool_nexus.core.constants import DATABASE_PATH; from tool_nexus.core.repositories import ToolRepository; ToolRepository(DATABASE_PATH).initialize(); print('OK:', DATABASE_PATH)"
 if errorlevel 1 (
     echo データベースの初期化に失敗しました。
     pause

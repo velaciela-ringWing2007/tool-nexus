@@ -1,4 +1,4 @@
-"""os_windows のテスト（PowerShell / taskkill はフェイクに差し替えるため、どのOSでも実行できる）."""
+"""tool_nexus.osdep.windows のテスト（PowerShell / taskkill はフェイクに差し替えるため、どのOSでも実行できる）."""
 
 from __future__ import annotations
 
