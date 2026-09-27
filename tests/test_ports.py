@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-from constants import DEFAULT_SETTINGS, TOOL_NEXUS_PORT
-from port_utils import (
+from tool_nexus.core.constants import DEFAULT_SETTINGS, TOOL_NEXUS_PORT
+from tool_nexus.core.ports import (
     PortError,
     assign_port,
     is_port_free,

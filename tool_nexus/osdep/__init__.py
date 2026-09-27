@@ -10,9 +10,9 @@ from __future__ import annotations
 import sys
 
 if sys.platform == "win32":
-    import os_windows as _impl
+    from tool_nexus.osdep import windows as _impl
 else:  # Linux（macOS は /proc が無いため未対応）
-    import os_linux as _impl
+    from tool_nexus.osdep import linux as _impl
 
 NAME: str = _impl.NAME
 IS_WINDOWS: bool = NAME == "windows"

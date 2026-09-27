@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from constants import DATABASE_PATH
+from tool_nexus.core.constants import DATABASE_PATH
 
 # 起動中かどうかは保存しない。現在の状態は毎回ヘルスチェックで取得する。
 SCHEMA_SQL: str = """

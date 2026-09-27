@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import os_windows
-from process_types import ProcessQueryError, Snapshot, StopError, normalize_creation_date
+from tool_nexus.osdep import windows as os_windows
+from tool_nexus.process.base import ProcessQueryError, Snapshot, StopError, normalize_creation_date
 
 
 class FakeRunner:

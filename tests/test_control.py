@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-import platform_ops
-from constants import KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
-from process_utils import (
+from tool_nexus import osdep
+from tool_nexus.core.constants import KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
+from tool_nexus.process.control import (
     LaunchError,
     PidStatus,
     ProcessNotIdentifiedError,
@@ -348,7 +348,7 @@ class TestVerifyPid:
 # stop
 # ----------------------------------------------------------------------
 class FakeKill:
-    """platform_ops.kill_tree の代わりに呼び出しを記録するフェイク."""
+    """osdep.kill_tree の代わりに呼び出しを記録するフェイク."""
 
     def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[int] = []
@@ -433,7 +433,7 @@ class TestLaunch:
         assert kwargs["stderr"] is subprocess.STDOUT
         assert kwargs.get("shell") in (None, False)
         # OSごとの切り離し方（Windows: CREATE_NO_WINDOW、Linux: start_new_session）を渡している
-        for key, value in platform_ops.LAUNCH_KWARGS.items():
+        for key, value in osdep.LAUNCH_KWARGS.items():
             assert kwargs[key] == value
 
     def test_launch_without_creation_date(self, tmp_path: Path) -> None:

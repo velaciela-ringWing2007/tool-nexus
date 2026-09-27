@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-import platform_ops
+from tool_nexus import osdep
 
-from constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
-from launch_assist import (
+from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
+from tool_nexus.process.launch_assist import (
     AssistError,
     detect_framework,
     find_project_root,
@@ -21,8 +21,8 @@ from launch_assist import (
     suggest_from_file,
     venv_python,
 )
-from process_types import ProcessQueryError
-from process_utils import split_command
+from tool_nexus.process.base import ProcessQueryError
+from tool_nexus.process.control import split_command
 
 VENV_PY = str(Path(".venv") / "Scripts" / "python.exe")
 
@@ -183,7 +183,7 @@ class TestSuggestFromFile:
     def test_system_python_uses_os_default(self, tmp_path: Path) -> None:
         write(tmp_path / "requirements.txt")
         script = write(tmp_path / "tool.py", "print(1)\n")
-        first, fallback = platform_ops.DEFAULT_PYTHONS
+        first, fallback = osdep.DEFAULT_PYTHONS
         assert suggest_from_file(script, which=lambda n: n if n == first else None).command == f"{first} tool.py"
         assert suggest_from_file(script, which=no_py).command == f"{fallback} tool.py"
 

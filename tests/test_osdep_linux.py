@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import os_linux
-from process_types import ProcessQueryError, StopError, normalize_creation_date
+from tool_nexus.osdep import linux as os_linux
+from tool_nexus.process.base import ProcessQueryError, StopError, normalize_creation_date
 
 BOOT = 1_790_000_000  # /proc/stat の btime（エポック秒）
 CLK = 100

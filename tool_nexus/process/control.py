@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-import platform_ops
-from constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT, PORT_PLACEHOLDER
-from process_types import (
+from tool_nexus import osdep
+from tool_nexus.core.constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT, PORT_PLACEHOLDER
+from tool_nexus.process.base import (
     CreationDateLookup,
     LaunchError,
     PidStatus,
@@ -45,9 +45,9 @@ __all__ = [
 ]
 
 # OS別の実装（呼び出し側はこの名前で使う）
-get_process_creation_date = platform_ops.get_process_creation_date
-get_creation_dates = platform_ops.get_creation_dates
-take_snapshot = platform_ops.take_snapshot
+get_process_creation_date = osdep.get_process_creation_date
+get_creation_dates = osdep.get_creation_dates
+take_snapshot = osdep.take_snapshot
 
 
 # ----------------------------------------------------------------------
@@ -61,7 +61,7 @@ def split_command(command: str, *, posix: bool | None = None) -> list[str]:
     Linux は通常の posix=True で分解する。
     """
     if posix is None:
-        posix = platform_ops.POSIX_SPLIT
+        posix = osdep.POSIX_SPLIT
     if posix:
         return shlex.split(command, posix=True)
     tokens = shlex.split(command, posix=False)
@@ -254,12 +254,12 @@ def launch(
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                **platform_ops.LAUNCH_KWARGS,
+                **osdep.LAUNCH_KWARGS,
             )
     except OSError as exc:
         raise LaunchError(f"起動に失敗しました: {exc}") from exc
     if isinstance(proc, subprocess.Popen):
-        platform_ops.track_child(proc)  # Linux: 終了後にゾンビとして残らないよう回収する
+        osdep.track_child(proc)  # Linux: 終了後にゾンビとして残らないよう回収する
 
     try:
         created_at = lookup(proc.pid)
@@ -273,7 +273,7 @@ def stop(
     created_at: str | None,
     *,
     lookup: CreationDateLookup = get_process_creation_date,
-    kill: Callable[[int], None] = platform_ops.kill_tree,
+    kill: Callable[[int], None] = osdep.kill_tree,
 ) -> None:
     """記録済みのプロセスを子ごと停止する。
 

@@ -8,9 +8,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-from constants import DEFAULT_SETTINGS
-from health import parse_interval
-from port_utils import PortError, parse_reserved_ports, validate_port_range
+from tool_nexus.core.constants import DEFAULT_SETTINGS
+from tool_nexus.core.ports import PortError, parse_reserved_ports, validate_port_range
+
+_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def parse_interval(value: str | float | int, *, default: float = 60.0) -> float:
+    """`60s` / `2m` / `1h` / `90` 形式の間隔を秒へ変換する。解釈できなければ default。"""
+    text = str(value).strip().lower()
+    unit = 1
+    if text and text[-1] in _INTERVAL_UNITS:
+        unit = _INTERVAL_UNITS[text[-1]]
+        text = text[:-1].strip()
+    try:
+        seconds = float(text) * unit
+    except ValueError:
+        return default
+    return seconds if seconds > 0 else default
+
 
 MIN_HEALTH_INTERVAL = 5.0
 MAX_HEALTH_INTERVAL = 3600.0

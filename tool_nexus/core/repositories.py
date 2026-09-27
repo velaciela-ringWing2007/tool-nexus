@@ -10,9 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
-from constants import DEFAULT_SETTINGS
-from database import DatabaseError, connect, initialize_database, transaction
-from models import Tool, now_iso, row_to_tool, tool_to_params
+from tool_nexus.core.constants import DEFAULT_SETTINGS
+from tool_nexus.core.database import DatabaseError, connect, initialize_database, transaction
+from tool_nexus.core.models import Tool, now_iso, row_to_tool, tool_to_params
 
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,

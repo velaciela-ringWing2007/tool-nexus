@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from constants import (
+from tool_nexus.core.constants import (
     DEFAULT_HEALTH_MODE_BY_KIND,
     HEALTH_HTTP,
     HEALTH_MODE_VALUES,
@@ -19,7 +19,7 @@ from constants import (
     MIN_PORT,
     PORT_PLACEHOLDER,
 )
-from process_utils import split_command
+from tool_nexus.process.control import split_command
 
 
 class ValidationError(ValueError):

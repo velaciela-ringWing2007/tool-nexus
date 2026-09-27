@@ -17,16 +17,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from constants import (
+from tool_nexus.core.constants import (
     KIND_EXE,
     KIND_PYTHON,
     KIND_STREAMLIT,
     KIND_WEB,
     PORT_PLACEHOLDER,
 )
-import platform_ops
-from models import default_health_mode
-from process_types import ProcessQueryError
+from tool_nexus import osdep
+from tool_nexus.core.models import default_health_mode
+from tool_nexus.process.base import ProcessQueryError
 
 # プロジェクトのルートとみなす目印
 PROJECT_MARKERS: tuple[str, ...] = (
@@ -141,7 +141,7 @@ _POSIX_SAFE = re.compile(r"[\w@%+=:,./{}-]+")
 def quote(token: str, *, posix: bool | None = None) -> str:
     """トークンを必要なときだけクォートする（split_command で元に戻せる形）。"""
     if posix is None:
-        posix = platform_ops.POSIX_SPLIT
+        posix = osdep.POSIX_SPLIT
     if posix:
         # shlex.quote は {port} まで囲んでしまう（動作はするが読みにくい）ため、安全な文字だけなら囲まない
         return token if _POSIX_SAFE.fullmatch(token) else shlex.quote(token)
@@ -171,7 +171,7 @@ def python_launcher(
             "初回は依存関係の同期で起動に時間がかかることがあります"
             "（先に uv sync で .venv を作っておくと、そちらを直接使います）。"
         ]
-    candidates = platform_ops.DEFAULT_PYTHONS
+    candidates = osdep.DEFAULT_PYTHONS
     launcher = next((name for name in candidates if which(name)), candidates[-1])
     return [launcher], [f"venv が見つからないため {launcher} を使います。必要ならコマンドを修正してください。"]
 
@@ -192,8 +192,8 @@ def suggest_from_file(
     suffix = path.suffix.lower()
     if suffix in (".bat", ".cmd"):
         raise AssistError(".bat / .cmd は登録できません（SPEC 6.9）。")
-    if suffix != ".py" and not platform_ops.is_executable_file(path):
-        raise AssistError(f"選べるのは {platform_ops.EXECUTABLE_LABEL} だけです。")
+    if suffix != ".py" and not osdep.is_executable_file(path):
+        raise AssistError(f"選べるのは {osdep.EXECUTABLE_LABEL} だけです。")
 
     if suffix != ".py":
         return Suggestion(
@@ -256,12 +256,12 @@ def _initial_dir(value: str | None) -> str | None:
 
 def pick_file(initial: str | None = None, *, picker=None) -> Path | None:
     """ファイル選択ダイアログを開く。キャンセルされたら None。"""
-    return _run_dialog(picker or platform_ops.pick_file, initial)
+    return _run_dialog(picker or osdep.pick_file, initial)
 
 
 def pick_folder(initial: str | None = None, *, picker=None) -> Path | None:
     """フォルダ選択ダイアログを開く。キャンセルされたら None。"""
-    return _run_dialog(picker or platform_ops.pick_folder, initial)
+    return _run_dialog(picker or osdep.pick_folder, initial)
 
 
 def _run_dialog(picker, initial: str | None) -> Path | None:

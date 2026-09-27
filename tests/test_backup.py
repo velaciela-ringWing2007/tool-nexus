@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from backup import (
+from tool_nexus.core.backup import (
     MODE_APPEND,
     MODE_REPLACE,
     SCHEMA_VERSION,
@@ -17,9 +17,9 @@ from backup import (
     parse_backup,
     restore_backup,
 )
-from constants import HEALTH_PROCESS, KIND_EXE
-from models import build_tool
-from repositories import ToolRepository
+from tool_nexus.core.constants import HEALTH_PROCESS, KIND_EXE
+from tool_nexus.core.models import build_tool
+from tool_nexus.core.repositories import ToolRepository
 
 STARTED = "2026-09-27T13:45:01+09:00"
 

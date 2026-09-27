@@ -11,10 +11,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from constants import APP_NAME, DEFAULT_SETTINGS
-from models import Tool, ValidationError, build_tool, now_iso
-from repositories import DuplicatePortError, ToolRepository
-from settings_utils import SettingsError, validate_settings
+from tool_nexus.core.constants import APP_NAME, DEFAULT_SETTINGS
+from tool_nexus.core.models import Tool, ValidationError, build_tool, now_iso
+from tool_nexus.core.repositories import DuplicatePortError, ToolRepository
+from tool_nexus.core.settings import SettingsError, validate_settings
 
 SCHEMA_VERSION = 1
 

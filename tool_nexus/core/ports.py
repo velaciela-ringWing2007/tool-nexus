@@ -10,7 +10,7 @@ import random
 import socket
 from typing import Callable, Iterable
 
-from constants import TOOL_NEXUS_PORT
+from tool_nexus.core.constants import TOOL_NEXUS_PORT
 
 # 自動割当の範囲として許すポート。
 # 1023以下は well-known、49152以降は Windows の動的ポート範囲（OSが自動で使う）。

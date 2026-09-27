@@ -13,7 +13,7 @@ from typing import Iterable
 
 import streamlit as st
 
-from constants import APP_NAME
+from tool_nexus.core.constants import APP_NAME
 
 # 配色（可読性を最優先し、彩度の高い色は輪郭と強調にのみ使う）
 COLOR_BACKGROUND = "#070b16"

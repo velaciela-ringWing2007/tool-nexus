@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from constants import HEALTH_HTTP, HEALTH_NONE, HEALTH_PROCESS, KIND_EXE, KIND_STREAMLIT
-from health import (
+from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_NONE, HEALTH_PROCESS, KIND_EXE, KIND_STREAMLIT
+from tool_nexus.core.settings import parse_interval
+from tool_nexus.process.health import (
     Status,
     ToolHealth,
     check_http,
@@ -16,12 +17,11 @@ from health import (
     derive_status,
     health_url,
     is_check_due,
-    parse_interval,
     probe,
     probe_all,
 )
-from models import Tool
-from process_utils import ProcessQueryError
+from tool_nexus.core.models import Tool
+from tool_nexus.process.control import ProcessQueryError
 
 JST = timezone(timedelta(hours=9))
 NOW = datetime(2026, 9, 27, 14, 0, 0, tzinfo=JST)

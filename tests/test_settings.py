@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from settings_utils import SettingsError, validate_settings
+from tool_nexus.core.settings import SettingsError, validate_settings
 
 
 class TestHealthInterval:

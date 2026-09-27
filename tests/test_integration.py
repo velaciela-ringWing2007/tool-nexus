@@ -15,12 +15,12 @@ from typing import Callable
 
 import pytest
 
-import platform_ops
-import process_utils as pu
-from constants import KIND_STREAMLIT, KIND_WEB
-from health import check_http
-from launch_assist import quote
-from port_utils import is_port_free, pick_free_port
+from tool_nexus import osdep
+from tool_nexus.process import control as pu
+from tool_nexus.core.constants import KIND_STREAMLIT, KIND_WEB
+from tool_nexus.process.health import check_http
+from tool_nexus.process.launch_assist import quote
+from tool_nexus.core.ports import is_port_free, pick_free_port
 
 pytestmark = pytest.mark.integration
 
@@ -37,7 +37,7 @@ def wait_until(predicate: Callable[[], bool], timeout: float) -> bool:
 def cleanup(result: pu.LaunchResult) -> None:
     """テストが途中で失敗しても、起動したプロセスを残さない。"""
     if pu.verify_pid(result.pid, result.created_at) is pu.PidStatus.MATCH:
-        platform_ops.kill_tree(result.pid)
+        osdep.kill_tree(result.pid)
 
 
 def test_web_tool_full_cycle(tmp_path: Path) -> None:

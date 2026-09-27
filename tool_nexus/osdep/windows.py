@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from process_types import (
+from tool_nexus.process.base import (
     ProcessInfo,
     ProcessQueryError,
     Runner,

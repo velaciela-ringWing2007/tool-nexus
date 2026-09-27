@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Iterable
 
-from constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_STREAMLIT
-from models import Tool
-from process_utils import (
+from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_STREAMLIT
+from tool_nexus.core.models import Tool
+from tool_nexus.process.control import (
     CreationDateLookup,
     PidStatus,
     ProcessQueryError,
@@ -153,23 +153,6 @@ def probe_all(
             lambda t: probe(t, timeout=timeout, lookup=lookup, opener=opener), targets
         )
         return {int(t.id): alive for t, alive in zip(targets, results)}
-
-
-_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600}
-
-
-def parse_interval(value: str | float | int, *, default: float = 60.0) -> float:
-    """`60s` / `2m` / `1h` / `90` 形式の間隔を秒へ変換する。解釈できなければ default。"""
-    text = str(value).strip().lower()
-    unit = 1
-    if text and text[-1] in _INTERVAL_UNITS:
-        unit = _INTERVAL_UNITS[text[-1]]
-        text = text[:-1].strip()
-    try:
-        seconds = float(text) * unit
-    except ValueError:
-        return default
-    return seconds if seconds > 0 else default
 
 
 def is_check_due(

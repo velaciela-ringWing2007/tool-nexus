@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from constants import (
+from tool_nexus.core.constants import (
     DEFAULT_SETTINGS,
     HEALTH_HTTP,
     HEALTH_NONE,
@@ -17,9 +17,9 @@ from constants import (
     KIND_STREAMLIT,
     KIND_WEB,
 )
-from database import connect
-from models import ValidationError, build_tool, can_auto_assign_port, default_health_mode
-from repositories import DuplicatePortError, ToolNotFoundError, ToolRepository
+from tool_nexus.core.database import connect
+from tool_nexus.core.models import ValidationError, build_tool, can_auto_assign_port, default_health_mode
+from tool_nexus.core.repositories import DuplicatePortError, ToolNotFoundError, ToolRepository
 
 COMMAND = r".venv\Scripts\python.exe -m streamlit run app.py"
 STARTED = "2026-09-27T13:45:01+09:00"

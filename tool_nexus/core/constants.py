@@ -8,7 +8,8 @@ from typing import Final
 APP_NAME: Final[str] = "TOOL NEXUS"
 APP_ICON: Final[str] = "⚡"
 
-PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent
+# このファイルは <root>/tool_nexus/core/constants.py にある
+PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 DATA_DIR: Final[Path] = PROJECT_ROOT / "data"
 DATABASE_PATH: Final[Path] = DATA_DIR / "tool_nexus.sqlite3"
 

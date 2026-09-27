@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from process_utils import (
+from tool_nexus.process.control import (
     ProcessInfo,
     Snapshot,
     detect_streamlit,

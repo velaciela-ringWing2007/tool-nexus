@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from process_types import (
+from tool_nexus.process.base import (
     ProcessInfo,
     ProcessQueryError,
     Runner,

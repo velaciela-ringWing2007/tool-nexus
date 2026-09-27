@@ -17,8 +17,8 @@ from typing import Any
 
 import streamlit as st
 
-import platform_ops
-from constants import (
+from tool_nexus import osdep
+from tool_nexus.core.constants import (
     APP_ICON,
     APP_NAME,
     DATABASE_PATH,
@@ -32,21 +32,21 @@ from constants import (
     health_mode_label,
     kind_label,
 )
-from backup import MODE_LABELS as BACKUP_MODE_LABELS
-from backup import MODE_REPLACE, BackupError, export_bytes, parse_backup, restore_backup
-from database import DatabaseError
-from health import (
+from tool_nexus.core.backup import MODE_LABELS as BACKUP_MODE_LABELS
+from tool_nexus.core.backup import MODE_REPLACE, BackupError, export_bytes, parse_backup, restore_backup
+from tool_nexus.core.database import DatabaseError
+from tool_nexus.core.settings import parse_interval
+from tool_nexus.process.health import (
     Status,
     ToolHealth,
     derive_status,
     is_check_due,
-    parse_interval,
     probe_all,
 )
-from models import Tool, ValidationError, build_tool, can_auto_assign_port, default_health_mode
-from port_utils import PortError, assign_port, is_port_free
-from launch_assist import AssistError, pick_file, pick_folder, quote, suggest_from_file
-from process_utils import (
+from tool_nexus.core.models import Tool, ValidationError, build_tool, can_auto_assign_port, default_health_mode
+from tool_nexus.core.ports import PortError, assign_port, is_port_free
+from tool_nexus.process.launch_assist import AssistError, pick_file, pick_folder, quote, suggest_from_file
+from tool_nexus.process.control import (
     DetectedTool,
     ProcessInfo,
     ProcessQueryError,
@@ -63,9 +63,9 @@ from process_utils import (
     resolve_log_path,
     stop,
 )
-from repositories import DuplicatePortError, ToolRepository
-from settings_utils import SETTING_LABELS, SettingsError, validate_settings
-from styles import (
+from tool_nexus.core.repositories import DuplicatePortError, ToolRepository
+from tool_nexus.core.settings import SETTING_LABELS, SettingsError, validate_settings
+from tool_nexus.ui.styles import (
     apply_styles,
     escape_html,
     render_app_bar,
@@ -419,10 +419,10 @@ def render_tool_form() -> dict[str, Any]:
         use_container_width=True,
         on_click=on_pick_file,
         key="form_pick_file",
-        help=f"起動する {platform_ops.EXECUTABLE_LABEL} を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
+        help=f"起動する {osdep.EXECUTABLE_LABEL} を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
         "ダイアログはこのPCの画面に開きます。",
     )
-    note_col.caption(f"起動する {platform_ops.EXECUTABLE_LABEL} を選ぶと、venv や uv も含めて推測して入力します。")
+    note_col.caption(f"起動する {osdep.EXECUTABLE_LABEL} を選ぶと、venv や uv も含めて推測して入力します。")
     for level, note in st.session_state.get("form_notes", []):
         if level == "error":
             st.error(note, icon="⛔")
