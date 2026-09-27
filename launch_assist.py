@@ -4,13 +4,14 @@
 最終的なコマンドはユーザーが確認してから登録する（推測は外れうる）。
 
 * ブラウザはローカルファイルのパスを渡せないため、サーバー側（同じPC）から
-  Windows 標準のダイアログを PowerShell で出す
+  OS標準のダイアログを出す（Windows: PowerShell の Windows Forms、Linux: zenity / kdialog）
 * ファイルの中身は読むだけで、実行はしない
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,8 +24,9 @@ from constants import (
     KIND_WEB,
     PORT_PLACEHOLDER,
 )
+import platform_ops
 from models import default_health_mode
-from process_utils import ProcessQueryError, Runner, run_powershell
+from process_types import ProcessQueryError
 
 # プロジェクトのルートとみなす目印
 PROJECT_MARKERS: tuple[str, ...] = (
@@ -39,10 +41,6 @@ PREFERRED_VENV_NAMES: tuple[str, ...] = (".venv", "venv", "env")
 MAX_ROOT_DEPTH = 8
 MAX_READ_BYTES = 512 * 1024
 
-# ファイル選択ダイアログはユーザーの操作を待つため長めに待つ
-DIALOG_TIMEOUT = 600.0
-
-SUPPORTED_SUFFIXES: frozenset[str] = frozenset({".py", ".exe"})
 
 FRAMEWORK_STREAMLIT = "streamlit"
 FRAMEWORK_FLASK = "flask"
@@ -85,8 +83,23 @@ def find_project_root(file: Path) -> Path:
     return start
 
 
+# venv 内の python の場所（Windows / Linux）
+VENV_PYTHONS: tuple[tuple[str, ...], ...] = (("Scripts", "python.exe"), ("bin", "python"))
+
+
+def venv_python(folder: Path) -> Path | None:
+    """venv なら中の python を返す。pyvenv.cfg が無いフォルダは venv とみなさない。"""
+    if not (folder / "pyvenv.cfg").is_file():
+        return None
+    for parts in VENV_PYTHONS:
+        candidate = folder.joinpath(*parts)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def is_venv(folder: Path) -> bool:
-    return (folder / "pyvenv.cfg").is_file() and (folder / "Scripts" / "python.exe").is_file()
+    return venv_python(folder) is not None
 
 
 def find_venv(file: Path, root: Path) -> Path | None:
@@ -122,8 +135,16 @@ def detect_framework(source: str) -> tuple[str, str]:
     return FRAMEWORK_NONE, ""
 
 
-def quote(token: str) -> str:
-    """空白を含むトークンをクォートする（split_command で元に戻せる形）。"""
+_POSIX_SAFE = re.compile(r"[\w@%+=:,./{}-]+")
+
+
+def quote(token: str, *, posix: bool | None = None) -> str:
+    """トークンを必要なときだけクォートする（split_command で元に戻せる形）。"""
+    if posix is None:
+        posix = platform_ops.POSIX_SPLIT
+    if posix:
+        # shlex.quote は {port} まで囲んでしまう（動作はするが読みにくい）ため、安全な文字だけなら囲まない
+        return token if _POSIX_SAFE.fullmatch(token) else shlex.quote(token)
     return f'"{token}"' if any(ch.isspace() for ch in token) else token
 
 
@@ -139,8 +160,9 @@ def python_launcher(
 ) -> tuple[list[str], list[str]]:
     """使う Python の起動トークンと、ユーザーへの注記を返す。"""
     venv = find_venv(file, root)
-    if venv is not None:
-        return [relative_to_root(venv / "Scripts" / "python.exe", root)], [
+    python = venv_python(venv) if venv is not None else None
+    if venv is not None and python is not None:
+        return [relative_to_root(python, root)], [
             f"venv を使います: {relative_to_root(venv, root)}"
         ]
     if (root / "uv.lock").is_file():
@@ -149,7 +171,8 @@ def python_launcher(
             "初回は依存関係の同期で起動に時間がかかることがあります"
             "（先に uv sync で .venv を作っておくと、そちらを直接使います）。"
         ]
-    launcher = "py" if which("py") else "python"
+    candidates = platform_ops.DEFAULT_PYTHONS
+    launcher = next((name for name in candidates if which(name)), candidates[-1])
     return [launcher], [f"venv が見つからないため {launcher} を使います。必要ならコマンドを修正してください。"]
 
 
@@ -167,10 +190,12 @@ def suggest_from_file(
     if not path.is_file():
         raise AssistError(f"ファイルが見つかりません: {path}")
     suffix = path.suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise AssistError("選べるのは .py と .exe だけです（.bat / .cmd は登録できません）。")
+    if suffix in (".bat", ".cmd"):
+        raise AssistError(".bat / .cmd は登録できません（SPEC 6.9）。")
+    if suffix != ".py" and not platform_ops.is_executable_file(path):
+        raise AssistError(f"選べるのは {platform_ops.EXECUTABLE_LABEL} だけです。")
 
-    if suffix == ".exe":
+    if suffix != ".py":
         return Suggestion(
             name=path.stem,
             directory=str(path.parent),
@@ -219,22 +244,8 @@ def suggest_from_file(
 
 
 # ----------------------------------------------------------------------
-# ダイアログ（PowerShell / Windows Forms）
+# ダイアログ（OS標準。platform_ops 経由）
 # ----------------------------------------------------------------------
-def _ps_literal(value: str) -> str:
-    """PowerShell の単一引用符文字列にする（' は '' に）。"""
-    return "'" + value.replace("'", "''") + "'"
-
-
-_DIALOG_PRELUDE = (
-    "Add-Type -AssemblyName System.Windows.Forms; "
-    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-    # ブラウザの裏に隠れないよう、最前面のフォームを親にして開く
-    "$owner = New-Object System.Windows.Forms.Form; "
-    "$owner.TopMost = $true; $owner.ShowInTaskbar = $false; "
-)
-
-
 def _initial_dir(value: str | None) -> str | None:
     if not value:
         return None
@@ -243,40 +254,18 @@ def _initial_dir(value: str | None) -> str | None:
     return str(folder) if folder.is_dir() else None
 
 
-def pick_file(initial: str | None = None, *, runner: Runner | None = None) -> Path | None:
+def pick_file(initial: str | None = None, *, picker=None) -> Path | None:
     """ファイル選択ダイアログを開く。キャンセルされたら None。"""
-    script = _DIALOG_PRELUDE + (
-        "$d = New-Object System.Windows.Forms.OpenFileDialog; "
-        "$d.Title = '起動するファイルを選択'; "
-        "$d.Filter = 'Python / 実行ファイル (*.py;*.exe)|*.py;*.exe'; "
-    )
-    folder = _initial_dir(initial)
-    if folder:
-        script += f"$d.InitialDirectory = {_ps_literal(folder)}; "
-    script += "if ($d.ShowDialog($owner) -eq 'OK') { $d.FileName }; $owner.Dispose()"
-    return _run_dialog(script, runner)
+    return _run_dialog(picker or platform_ops.pick_file, initial)
 
 
-def pick_folder(initial: str | None = None, *, runner: Runner | None = None) -> Path | None:
+def pick_folder(initial: str | None = None, *, picker=None) -> Path | None:
     """フォルダ選択ダイアログを開く。キャンセルされたら None。"""
-    script = _DIALOG_PRELUDE + (
-        "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
-        "$d.Description = '作業ディレクトリを選択'; "
-        "$d.ShowNewFolderButton = $false; "
-    )
-    folder = _initial_dir(initial)
-    if folder:
-        script += f"$d.SelectedPath = {_ps_literal(folder)}; "
-    script += "if ($d.ShowDialog($owner) -eq 'OK') { $d.SelectedPath }; $owner.Dispose()"
-    return _run_dialog(script, runner)
+    return _run_dialog(picker or platform_ops.pick_folder, initial)
 
 
-def _run_dialog(script: str, runner: Runner | None) -> Path | None:
-    kwargs = {"timeout": DIALOG_TIMEOUT}
-    if runner is not None:
-        kwargs["runner"] = runner
+def _run_dialog(picker, initial: str | None) -> Path | None:
     try:
-        output = run_powershell(script, **kwargs).strip()
+        return picker(_initial_dir(initial))
     except ProcessQueryError as exc:
-        raise AssistError("ファイル選択のダイアログを開けませんでした。") from exc
-    return Path(output) if output else None
+        raise AssistError(str(exc) or "ファイル選択のダイアログを開けませんでした。") from exc

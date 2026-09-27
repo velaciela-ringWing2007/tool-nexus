@@ -17,6 +17,7 @@ from typing import Any
 
 import streamlit as st
 
+import platform_ops
 from constants import (
     APP_ICON,
     APP_NAME,
@@ -239,7 +240,7 @@ def stop_tool(repository: ToolRepository, tool: Tool) -> bool:
         flash(
             f"「{tool.name}」: 対象プロセスを特定できませんでした。停止していません。"
             "TOOL NEXUSの外で起動されたか、既に終了している可能性があります。"
-            "動いている場合はタスクマネージャ等で停止してください。",
+            "動いている場合はタスクマネージャ（Linuxは kill）等で停止してください。",
             "error",
         )
         return True
@@ -402,10 +403,10 @@ def render_tool_form() -> dict[str, Any]:
         use_container_width=True,
         on_click=on_pick_file,
         key="form_pick_file",
-        help="起動する .py / .exe を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
+        help=f"起動する {platform_ops.EXECUTABLE_LABEL} を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
         "ダイアログはこのPCの画面に開きます。",
     )
-    note_col.caption("起動する .py / .exe を選ぶと、venv や uv も含めて推測して入力します。")
+    note_col.caption(f"起動する {platform_ops.EXECUTABLE_LABEL} を選ぶと、venv や uv も含めて推測して入力します。")
     for level, note in st.session_state.get("form_notes", []):
         if level == "error":
             st.error(note, icon="⛔")

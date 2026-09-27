@@ -5,23 +5,21 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from process_utils import (
-    ProcessQueryError,
-    Snapshot,
     ProcessInfo,
+    Snapshot,
     detect_streamlit,
     find_port_owner,
     guess_directory,
-    parse_snapshot,
     root_process,
-    take_snapshot,
 )
+
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows のパス表記を使うテスト")
 
 VENV_PY = r"E:\dev\list-nexus\.venv\Scripts\python.exe"
 OWN_PID = 9000  # TOOL NEXUS 自身
@@ -46,38 +44,6 @@ def base_processes() -> list[ProcessInfo]:
         proc(42288, 27208, "python.exe", f"{VENV_PY} -m streamlit run app.py"),
         proc(12380, 42288, "python.exe", f"{VENV_PY} -m streamlit run app.py"),
     ]
-
-
-class TestParseSnapshot:
-    def test_parse(self) -> None:
-        text = json.dumps(
-            {
-                "processes": [
-                    {"pid": 10, "ppid": 1, "name": "python.exe", "cmd": "python a.py",
-                     "created": "2026-09-27T19:30:31.3057490+09:00"},
-                    {"pid": 4, "ppid": 0, "name": "System", "cmd": None, "created": None},
-                ],
-                "listeners": [{"port": 8501, "pid": 10}, {"port": 8501, "pid": 10}, {"port": 135, "pid": 4}],
-            }
-        )
-        snap = parse_snapshot(text)
-        assert snap.processes[10].created_at is not None
-        assert snap.processes[4].command_line == ""
-        assert snap.listeners == {8501: frozenset({10}), 135: frozenset({4})}
-
-    def test_broken_json(self) -> None:
-        with pytest.raises(ProcessQueryError):
-            parse_snapshot("{oops")
-
-    def test_take_snapshot_uses_powershell_once(self) -> None:
-        calls = []
-
-        def runner(argv, **kwargs):
-            calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, '{"processes": [], "listeners": []}', "")
-
-        assert take_snapshot(runner=runner) == Snapshot({}, {})
-        assert len(calls) == 1 and "Get-NetTCPConnection" in calls[0][-1]
 
 
 class TestRootProcess:
@@ -157,6 +123,7 @@ class TestFindPortOwner:
 
 
 class TestDetectStreamlit:
+    @WINDOWS_ONLY
     def test_detects_unregistered(self) -> None:
         snap = snapshot(base_processes(), {8499: {OWN_PID}, 8501: {12380}, 135: {1}})
         found = detect_streamlit(snap, exclude_ports={8499}, own_pid=OWN_PID)
@@ -181,9 +148,11 @@ class TestDetectStreamlit:
 
 
 class TestGuessDirectory:
+    @WINDOWS_ONLY
     def test_venv_root(self) -> None:
         assert guess_directory(f"{VENV_PY} -m streamlit run app.py") == r"E:\dev\list-nexus"
 
+    @WINDOWS_ONLY
     def test_absolute_script(self) -> None:
         assert guess_directory(r'python -m streamlit run "C:\my tools\x\app.py"') == r"C:\my tools\x"
 
@@ -196,3 +165,33 @@ class TestGuessDirectory:
         (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
         exe = venv / "Scripts" / "python.exe"
         assert guess_directory(f'"{exe}" -m streamlit run app.py') == str(tmp_path / "proj")
+
+
+class TestLinuxLayout:
+    """Linux のプロセス（venv の python はシンボリックリンクで親子にならない）."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX のパス表記を使うテスト")
+    def test_detects_linux_streamlit(self) -> None:
+        venv_py = "/home/me/dev/list-nexus/.venv/bin/python"
+        snap = snapshot(
+            [
+                proc(1, 0, "systemd", "/sbin/init"),
+                proc(500, 1, "bash", "bash"),
+                proc(600, 500, "python", f"{venv_py} -m streamlit run app.py"),
+            ],
+            {8501: {600}},
+        )
+        found = detect_streamlit(snap, exclude_ports=set(), own_pid=OWN_PID)
+        assert [(d.port, d.process.pid) for d in found] == [(8501, 600)]
+        assert found[0].directory == "/home/me/dev/list-nexus"
+        assert found[0].name == "list-nexus"
+
+    def test_uv_run_with_versioned_python(self) -> None:
+        snap = snapshot(
+            [
+                proc(70, 1, "uv", "uv run python -m streamlit run app.py"),
+                proc(71, 70, "python3.12", "/p/.venv/bin/python3.12 -m streamlit run app.py"),
+            ],
+            {8600: {71}},
+        )
+        assert find_port_owner(snap, 8600, own_pid=OWN_PID).pid == 70

@@ -1,92 +1,69 @@
-"""プロセスの起動・停止・照合.
+"""プロセスの起動・停止・照合・探索（OSに依存しない部分）.
 
-psutil は使わず、プロセス情報は PowerShell（Get-CimInstance）で取得する。
+OSに依存する処理（プロセス情報の取得、子ごとの停止、起動フラグ、ファイル選択）は
+platform_ops 経由で os_windows / os_linux に委ねる（SPEC 3.2）。
 subprocess は常にリスト形式・shell=False で実行する。
 
-注意: Popen.pid は親プロセスであり、ポートを持つのは子プロセスである。
-そのため停止は taskkill /T で子を含めて行う。
-また、PIDはOSに再利用されるため、停止・死活判定の前に必ず
-起動時刻（CreationDate）を照合する（verify_pid）。
+注意: Popen.pid は親プロセスであり、ポートを持つのは子プロセスである（Windows の venv）。
+そのため停止は子を含めて行う。また、PIDはOSに再利用されるため、停止・死活判定の前に必ず
+起動時刻を照合する（verify_pid）。
 """
 
 from __future__ import annotations
 
-import enum
-import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+import platform_ops
 from constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT, PORT_PLACEHOLDER
+from process_types import (
+    CreationDateLookup,
+    LaunchError,
+    PidStatus,
+    ProcessInfo,
+    ProcessNotIdentifiedError,
+    ProcessQueryError,
+    Snapshot,
+    StopError,
+    normalize_creation_date,
+)
 
-POWERSHELL_TIMEOUT: float = 15.0
-TASKKILL_TIMEOUT: float = 15.0
+# process_types の例外・型も、呼び出し側はこのモジュールから import できる
+__all__ = [
+    "CreationDateLookup", "DetectedTool", "LaunchError", "LaunchResult", "PidStatus",
+    "ProcessInfo", "ProcessNotIdentifiedError", "ProcessQueryError", "Snapshot", "StopError",
+    "ancestors", "build_argv", "detect_streamlit", "find_port_owner", "get_creation_dates",
+    "get_process_creation_date", "guess_directory", "is_launcher_name", "launch",
+    "normalize_creation_date", "prepare_launch", "read_log_tail", "resolve_executable",
+    "resolve_log_path", "root_process", "split_command", "stop", "take_snapshot", "verify_pid",
+]
 
-# subprocess.CREATE_NO_WINDOW などは Windows でのみ定義される。
-_CREATE_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-_CREATE_NEW_PROCESS_GROUP: int = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-
-# 起動フラグ。DETACHED_PROCESS は使わない。
-# DETACHED_PROCESS と CREATE_NO_WINDOW を併用すると CREATE_NO_WINDOW が無視され、
-# 親（venv の python.exe はリダイレクタ）がコンソール無しになる。その子の python.exe は
-# 自分用のコンソールを新規に作ってウィンドウを表示し、それを閉じるとツールが落ちる（実機で確認）。
-# CREATE_NO_WINDOW だけなら非表示のコンソールが作られて子に引き継がれ、
-# TOOL NEXUS のコンソールとも切り離されるため、こちらを閉じてもツールは動き続ける。
-_LAUNCH_FLAGS: int = _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
-
-
-class ProcessError(RuntimeError):
-    """プロセス操作に失敗した場合に送出する例外."""
-
-
-class LaunchError(ProcessError):
-    """起動前の確認、または起動そのものに失敗した場合に送出する例外."""
-
-
-class StopError(ProcessError):
-    """taskkill が失敗した場合に送出する例外."""
-
-
-class ProcessQueryError(ProcessError):
-    """PowerShell によるプロセス情報の取得に失敗した場合に送出する例外."""
-
-
-class PidStatus(enum.Enum):
-    """記録済みPIDと現在のプロセスの照合結果."""
-
-    MATCH = "match"          # 同じプロセスが生きている
-    NOT_FOUND = "not_found"  # そのPIDのプロセスは存在しない
-    MISMATCH = "mismatch"    # PIDは存在するが起動時刻が違う（PIDが再利用された）
-    UNKNOWN = "unknown"      # 照合に必要な情報が無い、または取得に失敗した
-
-
-class ProcessNotIdentifiedError(ProcessError):
-    """停止対象のプロセスを特定できない場合に送出する例外.
-
-    PIDの再利用で無関係なプロセスを強制終了しないよう、照合が取れない限り停止しない。
-    """
-
-    def __init__(self, status: PidStatus) -> None:
-        super().__init__("対象プロセスを特定できませんでした。")
-        self.status = status
+# OS別の実装（呼び出し側はこの名前で使う）
+get_process_creation_date = platform_ops.get_process_creation_date
+get_creation_dates = platform_ops.get_creation_dates
+take_snapshot = platform_ops.take_snapshot
 
 
 # ----------------------------------------------------------------------
 # コマンドの組み立て
 # ----------------------------------------------------------------------
-def split_command(command: str) -> list[str]:
-    """コマンド文字列をargvへ分解する。
+def split_command(command: str, *, posix: bool | None = None) -> list[str]:
+    """コマンド文字列をargvへ分解する。閉じていないクォートがあると ValueError を送出する。
 
-    posix=True は C:\\dev\\x のバックスラッシュを消すため posix=False を使う。
+    Windows は posix=False を使う（posix=True は C:\\dev\\x のバックスラッシュを消すため）。
     posix=False はトークン両端のクォートを残すので、それを外す。
-    閉じていないクォートがあると ValueError を送出する。
+    Linux は通常の posix=True で分解する。
     """
+    if posix is None:
+        posix = platform_ops.POSIX_SPLIT
+    if posix:
+        return shlex.split(command, posix=True)
     tokens = shlex.split(command, posix=False)
     return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
@@ -130,20 +107,24 @@ def resolve_executable(executable: str, directory: Path) -> Path:
 
     Windows の CreateProcess は相対パスの実行ファイルを cwd 引数ではなく
     呼び出し元のカレントディレクトリ基準で探すため、作業ディレクトリ基準で解決しておく。
+
+    シンボリックリンクはたどらない（Path.resolve() は使わない）。Linux の venv の python は
+    システムの python へのリンクで、たどると venv の外の python になり、venv のパッケージが
+    見えなくなる（WSL の Ubuntu で確認）。
     """
     candidate = Path(executable)
     has_dir_part = candidate.is_absolute() or len(candidate.parts) > 1
     if has_dir_part:
         path = candidate if candidate.is_absolute() else directory / candidate
         if path.is_file():
-            return path.resolve()
+            return Path(os.path.abspath(path))
         raise LaunchError(f"実行ファイルが見つかりません: {path}")
 
     found = shutil.which(executable, path=None)
     if found is None:
         local = directory / executable
         if local.is_file():
-            return local.resolve()
+            return Path(os.path.abspath(local))
         raise LaunchError(f"実行ファイルが見つかりません: {executable}")
     return Path(found)
 
@@ -191,136 +172,8 @@ def read_log_tail(path: Path, *, max_lines: int, max_bytes: int) -> str | None:
 
 
 # ----------------------------------------------------------------------
-# 起動時刻（CreationDate）の正規化
+# 照合
 # ----------------------------------------------------------------------
-_CIM_DATETIME = re.compile(r"^(\d{14})(?:\.(\d{1,6}))?([+-])(\d{3})$")
-_DOTNET_JSON_DATE = re.compile(r"^/Date\((-?\d+)([+-]\d{4})?\)/$")
-
-
-def normalize_creation_date(value: str | datetime | None) -> str | None:
-    """CreationDate を秒精度・ローカルタイムゾーンのISO 8601へ正規化する。
-
-    PowerShell の取得方法によって表現が揺れるため、次の形式を受け付ける：
-
-    * CIM datetime（Get-WmiObject）: ``20260927193031.305749+540``（末尾は分単位のオフセット）
-    * .NET JSON（ConvertTo-Json）: ``/Date(1790505031305)/``（エポックミリ秒, UTC）
-    * ISO 8601（DateTime.ToString("o") など）: ``2026-09-27T19:30:31.3057490+09:00``
-
-    解釈できない値は None を返す。秒未満は切り捨てる。
-    """
-    if value is None:
-        return None
-    parsed = value if isinstance(value, datetime) else _parse_creation_date(str(value).strip())
-    if parsed is None:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()  # タイムゾーン無しはローカル時刻とみなす
-    return parsed.astimezone().replace(microsecond=0).isoformat()
-
-
-def _parse_creation_date(text: str) -> datetime | None:
-    if not text:
-        return None
-
-    match = _CIM_DATETIME.match(text)
-    if match:
-        base, _fraction, sign, minutes = match.groups()
-        offset = timedelta(minutes=int(minutes)) * (1 if sign == "+" else -1)
-        try:
-            return datetime.strptime(base, "%Y%m%d%H%M%S").replace(tzinfo=timezone(offset))
-        except ValueError:
-            return None
-
-    match = _DOTNET_JSON_DATE.match(text.replace("\\/", "/"))
-    if match:
-        return datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
-
-    # .NET の "o" 形式は秒未満が7桁あり fromisoformat が受け付けないことがあるため、
-    # 秒未満はどのみち切り捨てるので取り除いてから解釈する。
-    iso = re.sub(r"(\d{2}:\d{2}:\d{2})\.\d+", r"\1", text)
-    if iso.endswith("Z"):
-        iso = iso[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-
-
-# ----------------------------------------------------------------------
-# プロセス情報の取得（PowerShell）
-# ----------------------------------------------------------------------
-Runner = Callable[..., subprocess.CompletedProcess]
-
-
-def run_powershell(
-    script: str, *, runner: Runner = subprocess.run, timeout: float = POWERSHELL_TIMEOUT
-) -> str:
-    """PowerShell を shell=False で実行し、標準出力を返す。"""
-    argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", script]
-    try:
-        result = runner(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ProcessQueryError("PowerShellの実行に失敗しました。") from exc
-    if result.returncode != 0:
-        raise ProcessQueryError(f"PowerShellの実行に失敗しました: {result.stderr.strip()}")
-    return result.stdout
-
-
-def get_process_creation_date(pid: int, *, runner: Runner = subprocess.run) -> str | None:
-    """PIDの起動時刻を正規化して返す。プロセスが存在しなければ None。
-
-    取得自体に失敗した場合は ProcessQueryError を送出する
-    （「存在しない」と「分からない」を区別するため）。
-    """
-    # 出力形式を固定するため、DateTime を ToString("o") で文字列化して返させる。
-    script = (
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-        f'$p = Get-CimInstance Win32_Process -Filter "ProcessId={int(pid)}"; '
-        'if ($p) { $p.CreationDate.ToString("o") }'
-    )
-    output = run_powershell(script, runner=runner).strip()
-    if not output:
-        return None
-    normalized = normalize_creation_date(output)
-    if normalized is None:
-        raise ProcessQueryError(f"起動時刻を解釈できませんでした: {output}")
-    return normalized
-
-
-def get_creation_dates(pids: Iterable[int], *, runner: Runner = subprocess.run) -> dict[int, str]:
-    """複数PIDの起動時刻をPowerShell 1回でまとめて取得する。存在しないPIDは結果に含まれない。
-
-    一覧の死活監視でツールごとにPowerShellを起動すると遅いため、こちらを使う。
-    """
-    unique = sorted({int(pid) for pid in pids if pid})
-    if not unique:
-        return {}
-    condition = " OR ".join(f"ProcessId={pid}" for pid in unique)
-    script = (
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-        f'Get-CimInstance Win32_Process -Filter "{condition}" | '
-        'ForEach-Object { "$($_.ProcessId)`t$($_.CreationDate.ToString(\'o\'))" }'
-    )
-    result: dict[int, str] = {}
-    for line in run_powershell(script, runner=runner).splitlines():
-        pid_text, _, date_text = line.strip().partition("\t")
-        normalized = normalize_creation_date(date_text)
-        if pid_text.isdigit() and normalized:
-            result[int(pid_text)] = normalized
-    return result
-
-
-CreationDateLookup = Callable[[int], "str | None"]
-
-
 def verify_pid(
     pid: int | None,
     created_at: str | None,
@@ -401,10 +254,12 @@ def launch(
                 stdin=subprocess.DEVNULL,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                creationflags=_LAUNCH_FLAGS,
+                **platform_ops.LAUNCH_KWARGS,
             )
     except OSError as exc:
         raise LaunchError(f"起動に失敗しました: {exc}") from exc
+    if isinstance(proc, subprocess.Popen):
+        platform_ops.track_child(proc)  # Linux: 終了後にゾンビとして残らないよう回収する
 
     try:
         created_at = lookup(proc.pid)
@@ -418,62 +273,38 @@ def stop(
     created_at: str | None,
     *,
     lookup: CreationDateLookup = get_process_creation_date,
-    runner: Runner = subprocess.run,
+    kill: Callable[[int], None] = platform_ops.kill_tree,
 ) -> None:
-    """記録済みのプロセスを子ごと強制終了する。
+    """記録済みのプロセスを子ごと停止する。
 
-    起動時刻が一致しない限り taskkill を実行しない（PID再利用による誤爆を防ぐ）。
+    起動時刻が一致しない限り停止しない（PID再利用による誤爆を防ぐ）。
     特定できない場合は ProcessNotIdentifiedError を送出する。
+    停止の方法はOSによる（Windows: taskkill /T /F、Linux: SIGTERM → SIGKILL）。
     """
     status = verify_pid(pid, created_at, lookup=lookup)
     if status is not PidStatus.MATCH:
         raise ProcessNotIdentifiedError(status)
-
-    argv = ["taskkill", "/PID", str(int(pid)), "/T", "/F"]
-    try:
-        result = runner(
-            argv,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=TASKKILL_TIMEOUT,
-            creationflags=_CREATE_NO_WINDOW,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise StopError("停止に失敗しました。") from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise StopError(f"停止に失敗しました: {detail}")
+    kill(int(pid))
 
 
 # ----------------------------------------------------------------------
 # 探索（起動中ツールの検出・ポートからの引き直し）
 # ----------------------------------------------------------------------
-SNAPSHOT_TIMEOUT: float = 60.0
-
 # 親をたどるときに「同じツールの起動役」とみなしてよい実行ファイル。
 # venv の python.exe はリダイレクタで子が本体、streamlit.exe などは pip のエントリポイント、
-# uv.exe は uv run の親になる。cmd.exe や bash.exe、エクスプローラはここに含めない。
-LAUNCHER_NAMES: frozenset[str] = frozenset(
-    {"python.exe", "pythonw.exe", "py.exe", "uv.exe", "streamlit.exe", "flask.exe", "uvicorn.exe"}
+# uv は uv run の親になる。シェルやエクスプローラはここに含めない。
+_LAUNCHER_BASES: frozenset[str] = frozenset(
+    {"python", "pythonw", "py", "uv", "streamlit", "flask", "uvicorn"}
 )
+_VERSIONED_PYTHON = re.compile(r"python\d+(\.\d+)?")
 
 
-@dataclass(frozen=True, slots=True)
-class ProcessInfo:
-    pid: int
-    ppid: int
-    name: str
-    command_line: str
-    created_at: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class Snapshot:
-    """ある時点のプロセス一覧と、LISTEN中のポート → PID の対応."""
-
-    processes: dict[int, ProcessInfo]
-    listeners: dict[int, frozenset[int]]
+def is_launcher_name(name: str) -> bool:
+    """起動役とみなせる実行ファイル名か（python.exe / python3.12 / uv など）。"""
+    base = name.lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base in _LAUNCHER_BASES or bool(_VERSIONED_PYTHON.fullmatch(base))
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,53 +316,6 @@ class DetectedTool:
     listener_pid: int     # 実際にポートを持っているPID
     directory: str
     name: str
-
-
-_SNAPSHOT_SCRIPT = (
-    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-    "$procs = foreach ($p in Get-CimInstance Win32_Process) { [pscustomobject]@{ "
-    "pid=$p.ProcessId; ppid=$p.ParentProcessId; name=$p.Name; cmd=$p.CommandLine; "
-    "created=$(if ($p.CreationDate) { $p.CreationDate.ToString('o') } else { $null }) } }; "
-    "$listen = foreach ($c in Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue) { "
-    "[pscustomobject]@{ port=$c.LocalPort; pid=$c.OwningProcess } }; "
-    "[pscustomobject]@{ processes=@($procs); listeners=@($listen) } | ConvertTo-Json -Depth 3 -Compress"
-)
-
-
-def parse_snapshot(text: str) -> Snapshot:
-    """PowerShell の JSON 出力を Snapshot に変換する。"""
-    try:
-        data = json.loads(text or "{}")
-    except json.JSONDecodeError as exc:
-        raise ProcessQueryError("プロセス一覧を解釈できませんでした。") from exc
-
-    processes: dict[int, ProcessInfo] = {}
-    for item in data.get("processes") or []:
-        try:
-            pid = int(item["pid"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        processes[pid] = ProcessInfo(
-            pid=pid,
-            ppid=int(item.get("ppid") or 0),
-            name=str(item.get("name") or ""),
-            command_line=str(item.get("cmd") or ""),
-            created_at=normalize_creation_date(item.get("created")),
-        )
-
-    listeners: dict[int, set[int]] = {}
-    for item in data.get("listeners") or []:
-        try:
-            port, pid = int(item["port"]), int(item["pid"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        listeners.setdefault(port, set()).add(pid)
-    return Snapshot(processes, {port: frozenset(pids) for port, pids in listeners.items()})
-
-
-def take_snapshot(*, runner: Runner = subprocess.run) -> Snapshot:
-    """現在のプロセス一覧とLISTEN中のポートを PowerShell 1回で取得する（実測 約1秒）。"""
-    return parse_snapshot(run_powershell(_SNAPSHOT_SCRIPT, runner=runner, timeout=SNAPSHOT_TIMEOUT))
 
 
 def _args(command_line: str) -> list[str]:
@@ -550,7 +334,7 @@ def _same_tool(parent: ProcessInfo, child: ProcessInfo) -> bool:
     * uv run: 親 `uv run python -m streamlit run app.py` の末尾が子の引数
     * pip のエントリポイント（streamlit.exe）: 子の引数の末尾が親の引数
     """
-    if parent.name.lower() not in LAUNCHER_NAMES:
+    if not is_launcher_name(parent.name):
         return False
     parent_args, child_args = _args(parent.command_line), _args(child.command_line)
     if not parent_args or not child_args:
@@ -616,7 +400,7 @@ def find_port_owner(
 def guess_directory(command_line: str) -> str:
     """コマンドラインから作業ディレクトリを推測する（WMI では取得できないため）。
 
-    1. 実行ファイルが venv 配下（<root>/<venv>/Scripts/python.exe）なら <root>
+    1. 実行ファイルが venv 配下（<root>/<venv>/Scripts/python.exe、Linux は bin/python）なら <root>
     2. スクリプト（.py）が絶対パスならその親
     3. どちらも無ければ空（ユーザーに入力させる）
     """
@@ -627,7 +411,7 @@ def guess_directory(command_line: str) -> str:
     if not tokens:
         return ""
     exe = Path(tokens[0])
-    if exe.is_absolute() and exe.parent.name.lower() == "scripts" and len(exe.parents) >= 3:
+    if exe.is_absolute() and exe.parent.name.lower() in ("scripts", "bin") and len(exe.parents) >= 3:
         venv = exe.parent.parent
         if (venv / "pyvenv.cfg").is_file() or venv.name.lower() in {".venv", "venv", "env"}:
             return str(venv.parent)

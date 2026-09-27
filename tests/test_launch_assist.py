@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
+import sys
 from pathlib import Path
 
 import pytest
+
+import platform_ops
 
 from constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
 from launch_assist import (
@@ -16,8 +19,12 @@ from launch_assist import (
     pick_file,
     pick_folder,
     suggest_from_file,
+    venv_python,
 )
+from process_types import ProcessQueryError
 from process_utils import split_command
+
+VENV_PY = str(Path(".venv") / "Scripts" / "python.exe")
 
 
 def no_py(name: str) -> str | None:
@@ -131,7 +138,7 @@ class TestSuggestFromFile:
         assert s.directory == str(root)
         assert s.kind == KIND_STREAMLIT
         assert s.health_mode == HEALTH_HTTP
-        assert s.command == r".venv\Scripts\python.exe -m streamlit run app.py"
+        assert split_command(s.command) == [VENV_PY, "-m", "streamlit", "run", "app.py"]
 
     def test_paths_with_spaces_are_quoted(self, tmp_path: Path) -> None:
         root = tmp_path / "my tools"
@@ -140,7 +147,7 @@ class TestSuggestFromFile:
         write(root / "requirements.txt")
         s = suggest_from_file(script, which=no_py)
         assert split_command(s.command) == [
-            r"my env\Scripts\python.exe", r"sub dir\main app.py"
+            str(Path("my env") / "Scripts" / "python.exe"), str(Path("sub dir") / "main app.py")
         ]
         assert s.kind == KIND_PYTHON
         assert s.health_mode == HEALTH_PROCESS
@@ -171,14 +178,16 @@ class TestSuggestFromFile:
         write(tmp_path / "uv.lock")
         make_venv(tmp_path / ".venv")
         s = suggest_from_file(write(tmp_path / "app.py"), which=no_py)
-        assert s.command.startswith(r".venv\Scripts\python.exe")
+        assert split_command(s.command)[0] == VENV_PY
 
-    def test_system_python_prefers_py_launcher(self, tmp_path: Path) -> None:
+    def test_system_python_uses_os_default(self, tmp_path: Path) -> None:
         write(tmp_path / "requirements.txt")
         script = write(tmp_path / "tool.py", "print(1)\n")
-        assert suggest_from_file(script, which=has_py).command == "py tool.py"
-        assert suggest_from_file(script, which=no_py).command == "python tool.py"
+        first, fallback = platform_ops.DEFAULT_PYTHONS
+        assert suggest_from_file(script, which=lambda n: n if n == first else None).command == f"{first} tool.py"
+        assert suggest_from_file(script, which=no_py).command == f"{fallback} tool.py"
 
+    @pytest.mark.skipif(sys.platform != "win32", reason=".exe は Windows の実行ファイル")
     def test_exe(self, tmp_path: Path) -> None:
         exe = write(tmp_path / "My Tool" / "tool.exe")
         s = suggest_from_file(exe)
@@ -186,6 +195,14 @@ class TestSuggestFromFile:
         assert s.directory == str(tmp_path / "My Tool")
         assert split_command(s.command) == [str(exe)]
         assert s.health_mode == HEALTH_PROCESS
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="実行権限は POSIX のみ")
+    def test_executable_file_on_linux(self, tmp_path: Path) -> None:
+        tool = write(tmp_path / "bin" / "mytool")
+        os.chmod(tool, 0o755)
+        s = suggest_from_file(tool)
+        assert s.kind == KIND_EXE
+        assert split_command(s.command) == [str(tool)]
 
     @pytest.mark.parametrize("name", ["run.bat", "run.cmd", "notes.txt"])
     def test_unsupported(self, tmp_path: Path, name: str) -> None:
@@ -200,42 +217,44 @@ class TestSuggestFromFile:
 # ----------------------------------------------------------------------
 # ダイアログ（PowerShell はフェイク）
 # ----------------------------------------------------------------------
-class FakeRunner:
-    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.returncode = returncode
-        self.calls: list[tuple[list[str], dict]] = []
+class FakePicker:
+    def __init__(self, result=None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[str | None] = []
 
-    def __call__(self, argv, **kwargs):
-        self.calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, self.returncode, self.stdout, "")
+    def __call__(self, initial_dir):
+        self.calls.append(initial_dir)
+        if self.error:
+            raise self.error
+        return self.result
 
 
 class TestDialogs:
-    def test_pick_file(self, tmp_path: Path) -> None:
-        runner = FakeRunner(stdout=f"{tmp_path}\\app.py\r\n")
-        assert pick_file(str(tmp_path), runner=runner) == tmp_path / "app.py"
-        argv, kwargs = runner.calls[0]
-        assert "-STA" in argv
-        assert "OpenFileDialog" in argv[-1]
-        assert kwargs["timeout"] >= 60
+    def test_pick_file_passes_existing_folder(self, tmp_path: Path) -> None:
+        picker = FakePicker(tmp_path / "app.py")
+        assert pick_file(str(tmp_path / "app.py"), picker=picker) == tmp_path / "app.py"
+        assert picker.calls == [str(tmp_path)]
 
     def test_cancel(self) -> None:
-        assert pick_file(runner=FakeRunner(stdout="\r\n")) is None
-        assert pick_folder(runner=FakeRunner(stdout="")) is None
-
-    def test_initial_dir_is_escaped(self, tmp_path: Path) -> None:
-        folder = tmp_path / "it's"
-        folder.mkdir()
-        runner = FakeRunner()
-        pick_folder(str(folder), runner=runner)
-        assert "it''s" in runner.calls[0][0][-1]
+        assert pick_file(picker=FakePicker(None)) is None
+        assert pick_folder(picker=FakePicker(None)) is None
 
     def test_missing_initial_dir_is_ignored(self, tmp_path: Path) -> None:
-        runner = FakeRunner()
-        pick_file(str(tmp_path / "missing" / "x.py"), runner=runner)
-        assert "InitialDirectory" not in runner.calls[0][0][-1]
+        picker = FakePicker(None)
+        pick_folder(str(tmp_path / "missing" / "x"), picker=picker)
+        assert picker.calls == [None]
 
-    def test_failure(self) -> None:
-        with pytest.raises(AssistError):
-            pick_file(runner=FakeRunner(returncode=1))
+    def test_failure_becomes_assist_error(self) -> None:
+        with pytest.raises(AssistError, match="zenity"):
+            pick_file(picker=FakePicker(error=ProcessQueryError("zenity が必要です")))
+
+
+class TestVenvPython:
+    def test_linux_layout(self, tmp_path: Path) -> None:
+        venv = tmp_path / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").write_bytes(b"")
+        (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
+        assert venv_python(venv) == venv / "bin" / "python"
+        assert find_venv(write(tmp_path / "app.py"), tmp_path) == venv

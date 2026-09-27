@@ -1,11 +1,12 @@
 """process_utils のテスト.
 
 実際にはプロセスを起こさず、argv と呼び出し内容を検証する。
-PowerShell / taskkill はフェイクに差し替える。
+OSに依存する部分（PowerShell / taskkill / /proc）のテストは test_os_windows / test_os_linux にある。
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import platform_ops
 from constants import KIND_EXE, KIND_PYTHON, KIND_STREAMLIT, KIND_WEB
 from process_utils import (
     LaunchError,
@@ -21,8 +23,7 @@ from process_utils import (
     ProcessQueryError,
     StopError,
     build_argv,
-    get_creation_dates,
-    get_process_creation_date,
+    is_launcher_name,
     launch,
     normalize_creation_date,
     prepare_launch,
@@ -31,6 +32,8 @@ from process_utils import (
     stop,
     verify_pid,
 )
+
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Windows のパス表記を使うテスト")
 
 JST = timezone(timedelta(hours=9))
 
@@ -43,41 +46,73 @@ def local_iso(dt: datetime) -> str:
 # split_command
 # ----------------------------------------------------------------------
 class TestSplitCommand:
+    """Windows の分解規則（posix=False ＋両端のクォート除去）."""
+
     def test_quoted_path_with_spaces(self) -> None:
-        argv = split_command(r'"C:\Program Files\Python\python.exe" -m streamlit run app.py')
+        argv = split_command(r'"C:\Program Files\Python\python.exe" -m streamlit run app.py', posix=False)
         assert argv == [
             r"C:\Program Files\Python\python.exe", "-m", "streamlit", "run", "app.py"
         ]
 
     def test_unquoted_backslash_path_keeps_backslashes(self) -> None:
-        argv = split_command(r".venv\Scripts\python.exe -m streamlit run C:\dev\x\app.py")
+        argv = split_command(r".venv\Scripts\python.exe -m streamlit run C:\dev\x\app.py", posix=False)
         assert argv == [r".venv\Scripts\python.exe", "-m", "streamlit", "run", r"C:\dev\x\app.py"]
 
     def test_argument_with_spaces(self) -> None:
-        argv = split_command(r'python.exe -m streamlit run "C:\my tools\app.py" -- --title "a b"')
+        argv = split_command(r'python.exe -m streamlit run "C:\my tools\app.py" -- --title "a b"', posix=False)
         assert argv == [
             "python.exe", "-m", "streamlit", "run", r"C:\my tools\app.py", "--", "--title", "a b"
         ]
 
     def test_single_quotes_are_stripped(self) -> None:
-        assert split_command("tool.exe 'a b'") == ["tool.exe", "a b"]
+        assert split_command("tool.exe 'a b'", posix=False) == ["tool.exe", "a b"]
 
     @pytest.mark.parametrize("command", ["", "   ", "\t\n"])
     def test_empty_or_blank(self, command: str) -> None:
-        assert split_command(command) == []
+        assert split_command(command, posix=False) == []
 
     def test_quote_inside_token_is_kept(self) -> None:
         # 両端が同じクォートで囲まれたトークンだけを外す
-        assert split_command('tool.exe --name="ab"') == ["tool.exe", '--name="ab"']
+        assert split_command('tool.exe --name="ab"', posix=False) == ["tool.exe", '--name="ab"']
 
     def test_known_limit_quoted_space_inside_token(self) -> None:
         # 既知の制約: posix=False ではトークン途中から始まるクォート内の空白で分割される。
         # 空白を含む値は `--name "a b"` と別トークンに分けて書く。
-        assert split_command('tool.exe --name="a b"') == ["tool.exe", '--name="a', 'b"']
+        assert split_command('tool.exe --name="a b"', posix=False) == ["tool.exe", '--name="a', 'b"']
 
     def test_unclosed_quote_raises(self) -> None:
         with pytest.raises(ValueError):
-            split_command('"C:\\Program Files\\x.exe')
+            split_command('"C:\\Program Files\\x.exe', posix=False)
+
+
+class TestSplitCommandPosix:
+    """Linux の分解規則（posix=True）."""
+
+    def test_quoted_path_with_spaces(self) -> None:
+        argv = split_command("'/home/me/my tools/.venv/bin/python' -m streamlit run app.py", posix=True)
+        assert argv == ["/home/me/my tools/.venv/bin/python", "-m", "streamlit", "run", "app.py"]
+
+    def test_quote_inside_token_is_supported(self) -> None:
+        # Windows の既知の制約（--name="a b"）は Linux では起きない
+        assert split_command('tool --name="a b"', posix=True) == ["tool", "--name=a b"]
+
+    def test_unclosed_quote_raises(self) -> None:
+        with pytest.raises(ValueError):
+            split_command("tool 'a", posix=True)
+
+
+class TestIsLauncherName:
+    @pytest.mark.parametrize(
+        "name",
+        ["python.exe", "PYTHONW.EXE", "py.exe", "uv.exe", "streamlit.exe",
+         "python", "python3", "python3.12", "uv", "uvicorn"],
+    )
+    def test_launchers(self, name: str) -> None:
+        assert is_launcher_name(name)
+
+    @pytest.mark.parametrize("name", ["bash.exe", "cmd.exe", "explorer.exe", "bash", "code", "pythonista"])
+    def test_not_launchers(self, name: str) -> None:
+        assert not is_launcher_name(name)
 
 
 # ----------------------------------------------------------------------
@@ -110,6 +145,7 @@ class TestBuildArgv:
         assert "--server.port" not in argv
         assert "--server.address" in argv
 
+    @WINDOWS_ONLY
     def test_exe_gets_no_server_options(self) -> None:
         argv = build_argv(r'"C:\Tools\my tool.exe" --flag', kind=KIND_EXE, port=8600)
         assert argv == [r"C:\Tools\my tool.exe", "--flag"]
@@ -156,12 +192,12 @@ class TestPrepareLaunch:
         exe.parent.mkdir(parents=True)
         exe.write_bytes(b"")
         argv, workdir = prepare_launch(
-            command=r".venv\Scripts\python.exe -m streamlit run app.py",
+            command=f"{Path('.venv') / 'Scripts' / 'python.exe'} -m streamlit run app.py",
             kind=KIND_STREAMLIT,
             port=8502,
             directory=tmp_path,
         )
-        assert Path(argv[0]) == exe.resolve()
+        assert Path(argv[0]) == Path(os.path.abspath(exe))
         assert workdir == tmp_path
         assert argv[-6:] == [
             "--server.port", "8502", "--server.address", "127.0.0.1",
@@ -177,7 +213,7 @@ class TestPrepareLaunch:
     def test_missing_executable(self, tmp_path: Path) -> None:
         with pytest.raises(LaunchError, match="実行ファイル"):
             prepare_launch(
-                command=r".venv\Scripts\python.exe app.py",
+                command=f"{Path('.venv') / 'Scripts' / 'python.exe'} app.py",
                 kind=KIND_EXE,
                 port=None,
                 directory=tmp_path,
@@ -187,13 +223,24 @@ class TestPrepareLaunch:
         argv, _ = prepare_launch(
             command=f'"{sys.executable}" -c pass', kind=KIND_EXE, port=None, directory=tmp_path
         )
-        assert Path(argv[0]) == Path(sys.executable).resolve()
+        assert Path(argv[0]) == Path(os.path.abspath(sys.executable))
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="シンボリックリンクは POSIX で確認する")
+    def test_symlink_is_not_followed(self, tmp_path: Path) -> None:
+        # Linux の venv の python はシステムの python へのリンク。たどると venv の外になる
+        link = tmp_path / ".venv" / "bin" / "python"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(sys.executable)
+        argv, _ = prepare_launch(
+            command=".venv/bin/python -c pass", kind=KIND_EXE, port=None, directory=tmp_path
+        )
+        assert argv[0] == str(link)
 
 
 class TestResolveLogPath:
     def test_explicit_relative(self, tmp_path: Path) -> None:
         path = resolve_log_path(
-            directory=tmp_path, log_path=r"logs\app.log", default_log_dir="", tool_id=1
+            directory=tmp_path, log_path=str(Path("logs") / "app.log"), default_log_dir="", tool_id=1
         )
         assert path == tmp_path / "logs" / "app.log"
 
@@ -251,66 +298,6 @@ class TestNormalizeCreationDate:
         assert normalize_creation_date(value) is None
 
 
-class FakeRunner:
-    """subprocess.run の代わりに呼び出し内容を記録するフェイク."""
-
-    def __init__(self, stdout: str = "", returncode: int = 0, stderr: str = "") -> None:
-        self.stdout = stdout
-        self.returncode = returncode
-        self.stderr = stderr
-        self.calls: list[tuple[list[str], dict]] = []
-
-    def __call__(self, argv: list[str], **kwargs) -> subprocess.CompletedProcess:
-        self.calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, self.returncode, self.stdout, self.stderr)
-
-
-class TestGetProcessCreationDate:
-    def test_parses_output_and_uses_list_argv(self) -> None:
-        runner = FakeRunner(stdout="2026-09-27T19:30:31.3057490+09:00\r\n")
-        result = get_process_creation_date(1234, runner=runner)
-        assert result == normalize_creation_date("2026-09-27T19:30:31+09:00")
-        argv, kwargs = runner.calls[0]
-        assert argv[0] == "powershell.exe"
-        assert "ProcessId=1234" in argv[-1]
-        assert kwargs.get("shell") in (None, False)
-
-    def test_not_found_returns_none(self) -> None:
-        assert get_process_creation_date(1234, runner=FakeRunner(stdout="\r\n")) is None
-
-    def test_failure_raises(self) -> None:
-        with pytest.raises(ProcessQueryError):
-            get_process_creation_date(1234, runner=FakeRunner(returncode=1, stderr="boom"))
-
-    def test_unparseable_output_raises(self) -> None:
-        with pytest.raises(ProcessQueryError):
-            get_process_creation_date(1234, runner=FakeRunner(stdout="???"))
-
-
-class TestGetCreationDates:
-    def test_batches_into_one_call(self) -> None:
-        runner = FakeRunner(
-            stdout="10\t2026-09-27T19:30:31.3057490+09:00\r\n20\t20260927193032.000000+540\r\n"
-        )
-        result = get_creation_dates([20, 10, 10, 30], runner=runner)
-        assert result == {
-            10: normalize_creation_date("2026-09-27T19:30:31+09:00"),
-            20: normalize_creation_date("2026-09-27T19:30:32+09:00"),
-        }
-        assert len(runner.calls) == 1
-        assert "ProcessId=10 OR ProcessId=20 OR ProcessId=30" in runner.calls[0][0][-1]
-
-    def test_empty_does_not_call_powershell(self) -> None:
-        runner = FakeRunner()
-        assert get_creation_dates([], runner=runner) == {}
-        assert get_creation_dates([0, None], runner=runner) == {}
-        assert runner.calls == []
-
-    def test_failure_raises(self) -> None:
-        with pytest.raises(ProcessQueryError):
-            get_creation_dates([1], runner=FakeRunner(returncode=1))
-
-
 # ----------------------------------------------------------------------
 # verify_pid（停止前の照合と process モードの死活監視で共通）
 # ----------------------------------------------------------------------
@@ -360,13 +347,24 @@ class TestVerifyPid:
 # ----------------------------------------------------------------------
 # stop
 # ----------------------------------------------------------------------
+class FakeKill:
+    """platform_ops.kill_tree の代わりに呼び出しを記録するフェイク."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[int] = []
+        self.error = error
+
+    def __call__(self, pid: int) -> None:
+        self.calls.append(pid)
+        if self.error:
+            raise self.error
+
+
 class TestStop:
     def test_kills_tree_when_verified(self) -> None:
-        runner = FakeRunner()
-        stop(4321, STARTED, lookup=lookup_returning(STARTED), runner=runner)
-        argv, kwargs = runner.calls[0]
-        assert argv == ["taskkill", "/PID", "4321", "/T", "/F"]
-        assert kwargs.get("shell") in (None, False)
+        kill = FakeKill()
+        stop(4321, STARTED, lookup=lookup_returning(STARTED), kill=kill)
+        assert kill.calls == [4321]
 
     @pytest.mark.parametrize(
         ("lookup", "status"),
@@ -377,23 +375,22 @@ class TestStop:
         ],
     )
     def test_does_not_kill_when_not_identified(self, lookup, status) -> None:
-        runner = FakeRunner()
+        kill = FakeKill()
         with pytest.raises(ProcessNotIdentifiedError) as excinfo:
-            stop(4321, STARTED, lookup=lookup, runner=runner)
+            stop(4321, STARTED, lookup=lookup, kill=kill)
         assert excinfo.value.status is status
         assert "特定できませんでした" in str(excinfo.value)
-        assert runner.calls == []
+        assert kill.calls == []
 
     def test_does_not_kill_without_created_at(self) -> None:
-        runner = FakeRunner()
+        kill = FakeKill()
         with pytest.raises(ProcessNotIdentifiedError):
-            stop(4321, None, lookup=lookup_returning(STARTED), runner=runner)
-        assert runner.calls == []
+            stop(4321, None, lookup=lookup_returning(STARTED), kill=kill)
+        assert kill.calls == []
 
-    def test_taskkill_failure(self) -> None:
-        runner = FakeRunner(returncode=128, stderr="ERROR: not found")
+    def test_kill_failure_is_propagated(self) -> None:
         with pytest.raises(StopError, match="not found"):
-            stop(4321, STARTED, lookup=lookup_returning(STARTED), runner=runner)
+            stop(4321, STARTED, lookup=lookup_returning(STARTED), kill=FakeKill(StopError("not found")))
 
 
 # ----------------------------------------------------------------------
@@ -435,11 +432,9 @@ class TestLaunch:
         assert kwargs["stdout"] is not subprocess.PIPE
         assert kwargs["stderr"] is subprocess.STDOUT
         assert kwargs.get("shell") in (None, False)
-        if sys.platform == "win32":
-            flags = kwargs["creationflags"]
-            assert flags & subprocess.CREATE_NO_WINDOW
-            # DETACHED_PROCESS を併用すると孫プロセスがコンソールウィンドウを出してしまう
-            assert not flags & subprocess.DETACHED_PROCESS
+        # OSごとの切り離し方（Windows: CREATE_NO_WINDOW、Linux: start_new_session）を渡している
+        for key, value in platform_ops.LAUNCH_KWARGS.items():
+            assert kwargs[key] == value
 
     def test_launch_without_creation_date(self, tmp_path: Path) -> None:
         result = launch(
