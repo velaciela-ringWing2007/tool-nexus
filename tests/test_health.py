@@ -15,6 +15,8 @@ from health import (
     check_process,
     derive_status,
     health_url,
+    is_check_due,
+    parse_interval,
     probe,
     probe_all,
 )
@@ -214,6 +216,38 @@ class TestDeriveStatus:
     def test_seen_after_start_then_down_is_stopped(self) -> None:
         tool = make_tool(last_started_at=STARTED, last_seen_at="2026-09-27T13:45:20+09:00")
         assert derive_status(tool, False, now=at(60)) is Status.STOPPED
+
+
+class TestParseInterval:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("60s", 60), ("2m", 120), ("1h", 3600), ("90", 90), (" 1.5M ", 90), (30, 30)],
+    )
+    def test_valid(self, value, expected: float) -> None:
+        assert parse_interval(value) == expected
+
+    @pytest.mark.parametrize("value", ["", "abc", "0s", "-5s", "5x"])
+    def test_invalid_falls_back(self, value) -> None:
+        assert parse_interval(value, default=60) == 60
+
+
+class TestIsCheckDue:
+    def test_first_time(self) -> None:
+        assert is_check_due(last_checked=None, now=0, interval=60, any_starting=False, forced=False)
+
+    def test_within_interval(self) -> None:
+        assert not is_check_due(
+            last_checked=100, now=130, interval=60, any_starting=False, forced=False
+        )
+
+    def test_interval_elapsed(self) -> None:
+        assert is_check_due(last_checked=100, now=160, interval=60, any_starting=False, forced=False)
+
+    def test_starting_checks_every_tick(self) -> None:
+        assert is_check_due(last_checked=100, now=103, interval=60, any_starting=True, forced=False)
+
+    def test_forced(self) -> None:
+        assert is_check_due(last_checked=100, now=101, interval=60, any_starting=False, forced=True)
 
 
 class TestToolHealth:

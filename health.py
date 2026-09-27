@@ -155,6 +155,41 @@ def probe_all(
         return {int(t.id): alive for t, alive in zip(targets, results)}
 
 
+_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600}
+
+
+def parse_interval(value: str | float | int, *, default: float = 60.0) -> float:
+    """`60s` / `2m` / `1h` / `90` 形式の間隔を秒へ変換する。解釈できなければ default。"""
+    text = str(value).strip().lower()
+    unit = 1
+    if text and text[-1] in _INTERVAL_UNITS:
+        unit = _INTERVAL_UNITS[text[-1]]
+        text = text[:-1].strip()
+    try:
+        seconds = float(text) * unit
+    except ValueError:
+        return default
+    return seconds if seconds > 0 else default
+
+
+def is_check_due(
+    *,
+    last_checked: float | None,
+    now: float,
+    interval: float,
+    any_starting: bool,
+    forced: bool,
+) -> bool:
+    """実際にヘルスチェックを行うべきかを返す。
+
+    画面の再描画は短い間隔で行い、ヘルスチェック自体は設定の間隔ごとにだけ行う。
+    ただし起動中…のツールがある間と、再チェック・起動・停止の直後は毎回確認する。
+    """
+    if forced or any_starting or last_checked is None:
+        return True
+    return now - last_checked >= interval
+
+
 # ----------------------------------------------------------------------
 # 表示用の状態
 # ----------------------------------------------------------------------
