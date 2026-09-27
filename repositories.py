@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Iterable
 
 from constants import DEFAULT_SETTINGS
 from database import DatabaseError, connect, initialize_database, transaction
@@ -153,6 +154,66 @@ class ToolRepository:
             raise DatabaseError("ツールの削除に失敗しました。") from exc
         return cursor.rowcount > 0
 
+    def delete_many(self, tool_ids: Iterable[int]) -> int:
+        """まとめて削除する。削除した件数を返す。"""
+        ids = sorted({int(tool_id) for tool_id in tool_ids})
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with connect(self.db_path) as connection, transaction(connection):
+                cursor = connection.execute(f"DELETE FROM tools WHERE id IN ({placeholders})", ids)
+        except sqlite3.Error as exc:
+            raise DatabaseError("ツールの削除に失敗しました。") from exc
+        return cursor.rowcount
+
+    def update_order(self, changes: Iterable[tuple[int, int, bool]]) -> int:
+        """(ID, 表示順, まとめて起動) の組で一括更新する。更新した件数を返す。
+
+        行はIDで突き合わせる（表の並べ替え後に位置で照合すると別の行に適用されるため）。
+        """
+        rows = [(int(order), 1 if autostart else 0, now_iso(), int(tool_id)) for tool_id, order, autostart in changes]
+        if not rows:
+            return 0
+        try:
+            with connect(self.db_path) as connection, transaction(connection):
+                cursor = connection.executemany(
+                    "UPDATE tools SET sort_order = ?, autostart = ?, updated_at = ? WHERE id = ?", rows
+                )
+        except sqlite3.Error as exc:
+            raise DatabaseError("表示順の更新に失敗しました。") from exc
+        return cursor.rowcount
+
+    def replace_all(self, tools: Iterable[Tool]) -> int:
+        """全ツールを削除して入れ替える（バックアップの「置き換え」復元）。1つのトランザクションで行う。"""
+        timestamp = now_iso()
+        records = [tool_to_params(t) | {"created_at": timestamp, "updated_at": timestamp} for t in tools]
+        try:
+            with connect(self.db_path) as connection, transaction(connection):
+                connection.execute("DELETE FROM tools")
+                seen_ports: set[int] = set()
+                for record in records:
+                    port = record["port"]
+                    if port is not None and port in seen_ports:
+                        raise DuplicatePortError(port, Tool(id=None, name=record["name"], directory="", command=""))
+                    if port is not None:
+                        seen_ports.add(port)
+                    connection.execute(
+                        """
+                        INSERT INTO tools (
+                            name, kind, directory, command, port, health_mode, log_path,
+                            autostart, description, sort_order, created_at, updated_at
+                        ) VALUES (
+                            :name, :kind, :directory, :command, :port, :health_mode, :log_path,
+                            :autostart, :description, :sort_order, :created_at, :updated_at
+                        )
+                        """,
+                        record,
+                    )
+        except sqlite3.Error as exc:
+            raise DatabaseError("ツールの復元に失敗しました。") from exc
+        return len(records)
+
     # ------------------------------------------------------------------
     # 起動記録
     # ------------------------------------------------------------------
@@ -202,17 +263,22 @@ class ToolRepository:
         return self.get_settings()[key]
 
     def set_setting(self, key: str, value: str) -> None:
-        """設定値を保存する。値の妥当性は呼び出し側で検証する。"""
-        if key not in DEFAULT_SETTINGS:
-            raise KeyError(f"未知の設定です: {key}")
+        """設定値を保存する。値の妥当性は呼び出し側で検証する（settings_utils）。"""
+        self.set_settings({key: value})
+
+    def set_settings(self, values: dict[str, str]) -> None:
+        """複数の設定値を1つのトランザクションで保存する。"""
+        unknown = [key for key in values if key not in DEFAULT_SETTINGS]
+        if unknown:
+            raise KeyError(f"未知の設定です: {', '.join(unknown)}")
         try:
             with connect(self.db_path) as connection, transaction(connection):
-                connection.execute(
+                connection.executemany(
                     """
                     INSERT INTO settings (key, value) VALUES (?, ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """,
-                    (key, str(value)),
+                    [(key, str(value)) for key, value in values.items()],
                 )
         except sqlite3.Error as exc:
             raise DatabaseError("設定の保存に失敗しました。") from exc
