@@ -10,6 +10,7 @@ import streamlit as st
 
 from tool_nexus.core.constants import APP_ICON, APP_NAME
 from tool_nexus.core.database import DatabaseError
+from tool_nexus.process.link_server import ensure_server as ensure_link_server
 from tool_nexus.ui.dialogs import render_dialogs
 from tool_nexus.ui.layout import render_side_nav, render_toolbar, render_top_bar
 from tool_nexus.ui.settings_view import render_settings_screen
@@ -37,7 +38,12 @@ def main() -> None:
         st.stop()
         return
 
+    # ローカルのリンクを配信するサーバー（プロセス内で1回だけ起動。SPEC 6.10）
+    server_error = ensure_link_server(repository.get_by_id)
+
     render_top_bar()
+    if server_error:
+        st.warning(f"{server_error} ローカルのファイルのリンクは開けません。", icon="⚠️")
     try:
         if st.session_state["screen"] == SCREEN_SETTINGS:
             render_settings_screen(repository, settings)

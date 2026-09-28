@@ -29,7 +29,7 @@ STATUS_FILTERS: dict[str, frozenset[Status]] = {
     FILTER_ALL: frozenset(Status),
     FILTER_RUNNING: frozenset({Status.RUNNING, Status.STARTING}),
     FILTER_STOPPED: frozenset({Status.STOPPED}),
-    FILTER_ATTENTION: frozenset({Status.FAILED, Status.UNKNOWN}),
+    FILTER_ATTENTION: frozenset({Status.FAILED, Status.UNKNOWN, Status.MISSING}),
 }
 
 # メッセージを表示し続ける秒数。エラーは読み逃さないよう長めにする。
@@ -45,6 +45,7 @@ FORM_KEYS: dict[str, Any] = {
     "form_autostart": False,
     "form_description": "",
     "form_sort_order": 0,
+    "form_target": "",
 }
 
 # 画面
@@ -132,6 +133,7 @@ def prime_form(tool: Tool | None = None, overrides: dict[str, Any] | None = None
                 "form_autostart": tool.autostart,
                 "form_description": tool.description,
                 "form_sort_order": tool.sort_order,
+                "form_target": tool.target,
             }
         )
     values.update(overrides or {})

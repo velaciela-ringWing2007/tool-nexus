@@ -9,8 +9,10 @@ import streamlit as st
 from tool_nexus import osdep
 from tool_nexus.core.constants import (
     HEALTH_MODE_VALUES,
+    KIND_LINK,
     KIND_STREAMLIT,
     KIND_VALUES,
+    KIND_WEB,
     LOG_TAIL_BYTES,
     LOG_TAIL_LINES,
     TOOL_NEXUS_PORT,
@@ -41,14 +43,32 @@ from tool_nexus.process.control import (
     stop,
     take_snapshot,
 )
-from tool_nexus.process.launch_assist import AssistError, pick_file, pick_folder, quote, suggest_from_file
+from tool_nexus.process.launch_assist import (
+    AssistError,
+    pick_file,
+    pick_folder,
+    quote,
+    static_server_command,
+    suggest_from_file,
+)
 from tool_nexus.ui.actions import log_path_for, report_stopped
 from tool_nexus.ui.state import close_dialog, flash, format_time, logger, open_dialog, request_check
 
 
 def on_kind_change() -> None:
-    """種別を変えたら死活監視モードを種別の既定値にする（exe → process）。"""
-    st.session_state["form_health_mode"] = default_health_mode(st.session_state["form_kind"])
+    """種別を変えたら死活監視モードを種別の既定値にする（exe → process）。
+
+    web にしたとき起動コマンドが空なら、静的ファイルサーバーのコマンドを入れる（SPEC 6.1）。
+    """
+    kind = st.session_state["form_kind"]
+    st.session_state["form_health_mode"] = default_health_mode(kind)
+    st.session_state["form_notes"] = []  # 前の種別の案内は消す
+    if kind == KIND_WEB and not str(st.session_state.get("form_command", "")).strip():
+        st.session_state["form_command"] = static_server_command()
+        st.session_state["form_notes"] = [
+            ("info", "標準ライブラリの http.server で作業ディレクトリのフォルダを配信するコマンドを入れました。"
+                     "Flask などを登録する場合は書き換えてください。")
+        ]
 
 
 def on_pick_file() -> None:
@@ -58,7 +78,9 @@ def on_pick_file() -> None:
     推測は入力欄に入れるだけで、保存はユーザーが確認してから行う。
     """
     try:
-        path = pick_file(st.session_state.get("form_directory") or None)
+        path = pick_file(
+            st.session_state.get("form_directory") or st.session_state.get("form_target") or None
+        )
         if path is None:
             return
         suggestion = suggest_from_file(path)
@@ -70,10 +92,12 @@ def on_pick_file() -> None:
         st.session_state["form_name"] = suggestion.name
     st.session_state["form_directory"] = suggestion.directory
     st.session_state["form_command"] = suggestion.command
+    st.session_state["form_target"] = suggestion.target
     st.session_state["form_kind"] = suggestion.kind
     st.session_state["form_health_mode"] = suggestion.health_mode
+    check = "内容" if suggestion.kind == KIND_LINK else "下の「実行されるコマンド」"
     st.session_state["form_notes"] = [("info", note) for note in suggestion.notes] + [
-        ("info", "推測した内容です。下の「実行されるコマンド」を確認してから登録してください。")
+        ("info", f"推測した内容です。{check}を確認してから登録してください。")
     ]
 
 
@@ -85,6 +109,40 @@ def on_pick_folder() -> None:
         return
     if path is not None:
         st.session_state["form_directory"] = str(path)
+
+
+def on_pick_target_folder() -> None:
+    """リンク先にフォルダを選ぶ（フォルダの一覧や index.html を配信する）。"""
+    try:
+        path = pick_folder(st.session_state.get("form_target") or None)
+    except AssistError as exc:
+        st.session_state["form_notes"] = [("error", str(exc))]
+        return
+    if path is not None:
+        st.session_state["form_target"] = str(path)
+        if not str(st.session_state.get("form_name", "")).strip():
+            st.session_state["form_name"] = path.name
+
+
+def render_link_fields() -> None:
+    """種別 link の入力欄（リンク先だけ。起動しないので作業ディレクトリやコマンドは無い）。"""
+    target_col, button_col = st.columns([8, 1.2], vertical_alignment="bottom")
+    target_col.text_input(
+        "リンク先 *",
+        key="form_target",
+        placeholder=r"https://example.com/  または  C:\dev\tool-a\docs\index.html",
+        help="URL（http / https）か、ローカルのファイル／フォルダの絶対パス。"
+        "ローカルは TOOL NEXUS が http://127.0.0.1:8498/links/... として配信します（同じフォルダのCSS・画像も表示されます）。",
+    )
+    button_col.button(
+        ":material/folder:",
+        help="フォルダを選ぶ（フォルダの一覧や index.html を開くリンクにする）",
+        use_container_width=True,
+        on_click=on_pick_target_folder,
+        key="form_pick_target_folder",
+    )
+    st.number_input("表示順", key="form_sort_order", step=1)
+    st.text_area("説明", key="form_description", height=70)
 
 
 def render_command_preview(values: dict[str, Any]) -> None:
@@ -114,10 +172,10 @@ def render_tool_form() -> dict[str, Any]:
         use_container_width=True,
         on_click=on_pick_file,
         key="form_pick_file",
-        help=f"起動する {osdep.EXECUTABLE_LABEL} を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
-        "ダイアログはこのPCの画面に開きます。",
+        help=f"{osdep.EXECUTABLE_LABEL} を選ぶと、作業ディレクトリ・venv・種別・コマンドを推測して入力します。"
+        "HTML / PDF はリンクとして登録します。ダイアログはこのPCの画面に開きます。",
     )
-    note_col.caption(f"起動する {osdep.EXECUTABLE_LABEL} を選ぶと、venv や uv も含めて推測して入力します。")
+    note_col.caption(f"{osdep.EXECUTABLE_LABEL} を選ぶと推測して入力します（HTML / PDF はリンクになります）。")
     for level, note in st.session_state.get("form_notes", []):
         if level == "error":
             st.error(note, icon="⛔")
@@ -134,6 +192,17 @@ def render_tool_form() -> dict[str, Any]:
             key="form_kind",
             on_change=on_kind_change,
         )
+    if st.session_state["form_kind"] == KIND_LINK:
+        render_link_fields()
+        return {
+            "name": st.session_state["form_name"],
+            "kind": KIND_LINK,
+            "directory": "",
+            "command": "",
+            "target": st.session_state["form_target"],
+            "description": st.session_state["form_description"],
+            "sort_order": st.session_state["form_sort_order"],
+        }
     with right:
         st.selectbox(
             "死活監視 *",

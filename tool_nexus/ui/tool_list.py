@@ -7,11 +7,12 @@ from datetime import datetime
 
 import streamlit as st
 
-from tool_nexus.core.constants import health_mode_label, kind_label
-from tool_nexus.core.models import Tool
+from tool_nexus.core.constants import KIND_LINK, health_mode_label, kind_label
+from tool_nexus.core.models import Tool, is_url
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.core.settings import parse_interval
 from tool_nexus.process.health import Status, ToolHealth, derive_status, is_check_due, probe_all
+from tool_nexus.process.link_server import link_url
 from tool_nexus.ui.actions import start_tool, stop_tool
 from tool_nexus.ui.state import (
     KIND_ALL,
@@ -39,7 +40,13 @@ LIST_TICK = "3s"
 
 
 def open_url(tool: Tool) -> str | None:
-    """「開く」のURL。127.0.0.1 固定で、ユーザー入力は整数のポートのみ使う。"""
+    """「開く」のURL。
+
+    ツールは 127.0.0.1 固定で、ユーザー入力は整数のポートのみ使う。
+    リンクは URL をそのまま、ローカルのファイルは TOOL NEXUS の配信サーバーのURL（SPEC 6.10）。
+    """
+    if tool.kind == KIND_LINK:
+        return link_url(tool)
     return f"http://127.0.0.1:{int(tool.port)}" if tool.port else None
 
 
@@ -47,7 +54,33 @@ NOTICES: dict[Status, str] = {
     Status.STARTING: "起動中…（応答を待っています）",
     Status.FAILED: "起動できていない可能性があります。ログを確認してください。",
     Status.UNKNOWN: "",
+    Status.MISSING: "リンク先が見つかりません。移動・削除されていないか確認してください。",
 }
+
+
+def render_link_row(tool: Tool, health: ToolHealth) -> None:
+    """リンクの行。起動・停止・ログは無く、「開く」と編集だけ（SPEC 6.10）。
+
+    列の数と幅はツールの行と揃え、ボタンの位置がずれないようにする。
+    """
+    with st.container(key=f"tn-row-{tool.id}"):
+        main_col, port_col, _action_col, _log_col, edit_col = st.columns(
+            [6, 1.5, 0.9, 0.45, 0.45], vertical_alignment="center"
+        )
+        with main_col:
+            render_tool_summary(
+                name=tool.name,
+                status=health.status.value,
+                status_label=health.label,
+                meta=[kind_label(tool.kind), "Web" if is_url(tool.target) else "ローカル"],
+                path=tool.target,
+                notice=NOTICES.get(health.status, ""),
+            )
+        with port_col:
+            render_port_link(None, open_url(tool) if health.status is Status.LINK else None)
+        with edit_col:
+            if st.button(":material/edit:", key=f"edit_{tool.id}", help="編集・削除"):
+                open_dialog("edit", tool)
 
 
 def render_tool_row(
@@ -59,6 +92,9 @@ def render_tool_row(
     状態・名前・パスは1つのHTML、「開く」は素のアンカーで描く（0ウィジェット）。
     """
     tool = health.tool
+    if tool.kind == KIND_LINK:
+        render_link_row(tool, health)
+        return
     with st.container(key=f"tn-row-{tool.id}"):
         main_col, port_col, action_col, log_col, edit_col = st.columns(
             [6, 1.5, 0.9, 0.45, 0.45], vertical_alignment="center"
@@ -109,7 +145,7 @@ def matches_query(tool: Tool, query: str) -> bool:
     if not query:
         return True
     haystack = " ".join(
-        [tool.name, tool.directory, tool.command, tool.description, str(tool.port or "")]
+        [tool.name, tool.directory, tool.command, tool.target, tool.description, str(tool.port or "")]
     ).lower()
     return all(word in haystack for word in query.lower().split())
 
@@ -164,13 +200,16 @@ def render_tool_list(repository: ToolRepository, settings: dict[str, str]) -> No
     wanted = STATUS_FILTERS[st.session_state["status_filter"]]
     shown = [h for h in healths if h.status in wanted]
     running = sum(h.status is Status.RUNNING for h in healths)
+    launchable = sum(h.tool.kind != KIND_LINK for h in healths)  # リンクは起動しないので数えない
+    links = len(healths) - launchable
 
     with st.container(key="tn-listhead"):
         summary_col, recheck_col = st.columns([8, 1.5], vertical_alignment="center")
         with summary_col:
             render_summary(
                 [
-                    f"<span>起動中 <strong>{running}</strong> / {len(healths)}</span>",
+                    f"<span>起動中 <strong>{running}</strong> / {launchable}</span>",
+                    f"<span>リンク {links}</span>" if links else "",
                     f"<span>表示 {len(shown)} 件</span>",
                     f"<span>最終確認 {escape_html(st.session_state['health_checked_label'])}</span>",
                 ]

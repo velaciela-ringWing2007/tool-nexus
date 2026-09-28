@@ -17,7 +17,7 @@ from tool_nexus.core.models import Tool, now_iso, row_to_tool, tool_to_params
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,
     description, sort_order, last_pid, last_pid_created_at, last_started_at,
-    last_stopped_at, last_seen_at, created_at, updated_at
+    last_stopped_at, last_seen_at, target, created_at, updated_at
 """
 
 # 既定の並び順: 表示順 → 名前
@@ -101,10 +101,10 @@ class ToolRepository:
                     """
                     INSERT INTO tools (
                         name, kind, directory, command, port, health_mode, log_path,
-                        autostart, description, sort_order, created_at, updated_at
+                        autostart, description, sort_order, target, created_at, updated_at
                     ) VALUES (
                         :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                        :autostart, :description, :sort_order, :created_at, :updated_at
+                        :autostart, :description, :sort_order, :target, :created_at, :updated_at
                     )
                     """,
                     params,
@@ -130,7 +130,7 @@ class ToolRepository:
                         name = :name, kind = :kind, directory = :directory,
                         command = :command, port = :port, health_mode = :health_mode,
                         log_path = :log_path, autostart = :autostart,
-                        description = :description, sort_order = :sort_order,
+                        description = :description, sort_order = :sort_order, target = :target,
                         updated_at = :updated_at
                     WHERE id = :id
                     """,
@@ -202,10 +202,10 @@ class ToolRepository:
                         """
                         INSERT INTO tools (
                             name, kind, directory, command, port, health_mode, log_path,
-                            autostart, description, sort_order, created_at, updated_at
+                            autostart, description, sort_order, target, created_at, updated_at
                         ) VALUES (
                             :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                            :autostart, :description, :sort_order, :created_at, :updated_at
+                            :autostart, :description, :sort_order, :target, :created_at, :updated_at
                         )
                         """,
                         record,

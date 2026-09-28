@@ -46,7 +46,7 @@ POSIX_SPLIT = False
 DEFAULT_PYTHONS: tuple[str, ...] = ("py", "python")
 
 # ファイル選択で選べる実行ファイルの説明
-EXECUTABLE_LABEL = ".py / .exe"
+EXECUTABLE_LABEL = ".py / .exe / .html"
 
 
 def is_executable_file(path: Path) -> bool:
@@ -224,7 +224,8 @@ def pick_file(initial_dir: str | None = None, *, runner: Runner = subprocess.run
     script = _DIALOG_PRELUDE + (
         "$d = New-Object System.Windows.Forms.OpenFileDialog; "
         "$d.Title = '起動するファイルを選択'; "
-        "$d.Filter = 'Python / 実行ファイル (*.py;*.exe)|*.py;*.exe'; "
+        "$d.Filter = 'Python / 実行ファイル / HTML / PDF (*.py;*.exe;*.html;*.htm;*.pdf;*.svg)|"
+        "*.py;*.exe;*.html;*.htm;*.pdf;*.svg'; "
     )
     if initial_dir:
         script += f"$d.InitialDirectory = {_ps_literal(initial_dir)}; "

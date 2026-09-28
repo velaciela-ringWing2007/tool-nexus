@@ -56,7 +56,7 @@ class TestExport:
         assert item == {
             "name": "A", "kind": "streamlit", "directory": "/dev/x",
             "command": "python -m streamlit run app.py", "port": 8502, "healthMode": "http",
-            "logPath": "", "autostart": True, "description": "説明", "sortOrder": 0,
+            "logPath": "", "autostart": True, "description": "説明", "sortOrder": 0, "target": "",
         }
         text = export_bytes(repo).decode("utf-8")
         assert "123" not in text and "last" not in text.lower() and '"id"' not in text

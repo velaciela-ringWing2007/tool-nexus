@@ -7,11 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from tool_nexus.core.constants import (
     DEFAULT_HEALTH_MODE_BY_KIND,
     HEALTH_HTTP,
     HEALTH_MODE_VALUES,
+    HEALTH_NONE,
+    KIND_LINK,
     KIND_STREAMLIT,
     KIND_VALUES,
     MAX_NAME_LENGTH,
@@ -45,6 +48,7 @@ class Tool:
     autostart: bool = False
     description: str = ""
     sort_order: int = 0
+    target: str = ""
     last_pid: int | None = None
     last_pid_created_at: str | None = None
     last_started_at: str | None = None
@@ -77,6 +81,7 @@ def row_to_tool(row: sqlite3.Row) -> Tool:
         last_pid_created_at=row["last_pid_created_at"],
         last_started_at=row["last_started_at"],
         last_stopped_at=row["last_stopped_at"],
+        target=row["target"] or "",
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
@@ -99,6 +104,7 @@ def tool_to_params(tool: Tool) -> dict[str, Any]:
         "autostart": 1 if tool.autostart else 0,
         "description": tool.description,
         "sort_order": tool.sort_order,
+        "target": tool.target,
     }
 
 
@@ -154,6 +160,28 @@ def normalize_directory(raw: str | None, *, check_exists: bool) -> str:
     return directory
 
 
+def is_url(value: str) -> bool:
+    return urlparse(value).scheme.lower() in ("http", "https")
+
+
+def normalize_target(raw: str | None, *, check_exists: bool) -> str:
+    """リンク先を検証する。URL（http / https）か、ローカルのファイル／フォルダの絶対パス。"""
+    target = (raw or "").strip().strip('"')
+    if not target:
+        raise ValidationError("リンク先（URL またはファイル／フォルダのパス）を入力してください。")
+    if is_url(target):
+        if not urlparse(target).netloc:
+            raise ValidationError(f"URL の形式が正しくありません: {target}")
+        return target
+    if "://" in target or target.lower().startswith(("javascript:", "data:", "file:")):
+        raise ValidationError("リンク先の URL は http / https のみ使えます（ローカルのファイルはパスで指定します）。")
+    if not Path(target).is_absolute():
+        raise ValidationError("ローカルのファイル／フォルダは絶対パスで指定してください。")
+    if check_exists and not Path(target).exists():
+        raise ValidationError(f"リンク先が見つかりません: {target}")
+    return target
+
+
 def normalize_command(raw: str | None) -> str:
     command = (raw or "").strip()
     if not command:
@@ -204,6 +232,7 @@ def build_tool(
     autostart: bool = False,
     description: str | None = "",
     sort_order: Any = 0,
+    target: str | None = "",
     check_directory: bool = True,
 ) -> Tool:
     """入力値を検証・正規化して Tool を組み立てる。
@@ -213,6 +242,22 @@ def build_tool(
     check_directory=False はバックアップの復元など、別PCのパスを受け入れる場合に使う。
     """
     normalized_kind = normalize_kind(kind)
+    if normalized_kind == KIND_LINK:
+        # リンクは起動しないので、作業ディレクトリ・コマンド・ポート・監視は持たない（SPEC 6.10）
+        return Tool(
+            id=id,
+            name=normalize_name(name),
+            kind=KIND_LINK,
+            directory="",
+            command="",
+            port=None,
+            health_mode=HEALTH_NONE,
+            log_path="",
+            autostart=False,
+            description=(description or "").strip(),
+            sort_order=normalize_sort_order(sort_order),
+            target=normalize_target(target, check_exists=check_directory),
+        )
     normalized_mode = normalize_health_mode(health_mode, normalized_kind)
     normalized_port = normalize_port(port)
     normalized_command = normalize_command(command)

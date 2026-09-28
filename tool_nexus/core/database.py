@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tools (
     last_pid_created_at TEXT,
     last_started_at TEXT,
     last_stopped_at TEXT,
+    target TEXT NOT NULL DEFAULT '',
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -102,6 +103,9 @@ def _migrate(connection: sqlite3.Connection) -> None:
     if "last_stopped_at" not in columns:
         # 停止操作の記録（起動直後に停止したとき「起動中…」に戻らないようにするため。SPEC 6.4）
         connection.execute("ALTER TABLE tools ADD COLUMN last_stopped_at TEXT")
+    if "target" not in columns:
+        # リンク先（種別 link のみ。SPEC 6.10）
+        connection.execute("ALTER TABLE tools ADD COLUMN target TEXT NOT NULL DEFAULT ''")
 
 
 def initialize_database(db_path: Path | str = DATABASE_PATH) -> None:

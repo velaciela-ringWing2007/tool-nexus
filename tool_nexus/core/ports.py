@@ -10,7 +10,7 @@ import random
 import socket
 from typing import Callable, Iterable
 
-from tool_nexus.core.constants import TOOL_NEXUS_PORT
+from tool_nexus.core.constants import LINK_SERVER_PORT, TOOL_NEXUS_PORT
 
 # 自動割当の範囲として許すポート。
 # 1023以下は well-known、49152以降は Windows の動的ポート範囲（OSが自動で使う）。
@@ -51,9 +51,9 @@ def pick_free_port(
 
     候補をサンプリングせず、未使用のものを全件シャッフルして順に試す
     （サンプリングは範囲が狭いと ValueError になり、空きがあっても見つからないことがある）。
-    TOOL NEXUS 自身のポートは used に含まれていなくても常に除外する。
+    TOOL NEXUS 自身とリンク配信のポートは used に含まれていなくても常に除外する。
     """
-    excluded = set(used) | {TOOL_NEXUS_PORT}
+    excluded = set(used) | {TOOL_NEXUS_PORT, LINK_SERVER_PORT}
     candidates = [port for port in range(low, high + 1) if port not in excluded]
     random.shuffle(candidates)
     for port in candidates:

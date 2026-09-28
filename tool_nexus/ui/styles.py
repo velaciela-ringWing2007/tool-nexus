@@ -255,6 +255,7 @@ _CSS = f"""
     padding-left: 1.2rem;
 }}
 .tn-row-status--failed {{ color: var(--tn-danger); }}
+.tn-row-status--missing {{ color: var(--tn-danger); }}
 .tn-row-status--starting {{ color: var(--tn-warn); }}
 [class*="st-key-tn-row-"] .stButton > button {{
     padding: 0.25rem 0.4rem;
@@ -285,6 +286,16 @@ _CSS = f"""
 .tn-dot--failed {{
     background: var(--tn-danger);
     opacity: 1;
+}}
+.tn-dot--link {{
+    background: var(--tn-accent-sub);
+    opacity: 0.9;
+    border-radius: 2px;
+}}
+.tn-dot--missing {{
+    background: var(--tn-danger);
+    opacity: 1;
+    border-radius: 2px;
 }}
 .tn-dot--unknown {{
     background: transparent;
@@ -437,8 +448,13 @@ def render_port_link(port: int | None, url: str | None) -> None:
     url は呼び出し側で http://127.0.0.1:<port> から組み立てたものに限る。
     """
     if port is None:
-        st.markdown('<div class="tn-links"><span class="tn-port tn-port--none">—</span></div>',
-                    unsafe_allow_html=True)
+        # リンク（SPEC 6.10）はポートを持たず「開く」だけを出す
+        link = (
+            f'<a href="{escape_html(url)}" target="_blank" rel="noopener noreferrer">開く</a>'
+            if url
+            else '<span class="tn-port tn-port--none">—</span>'
+        )
+        st.markdown(f'<div class="tn-links">{link}</div>', unsafe_allow_html=True)
         return
     link = (
         f'<a href="{escape_html(url)}" target="_blank" rel="noopener noreferrer">開く</a>'

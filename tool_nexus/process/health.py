@@ -13,10 +13,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Callable, Iterable
 
-from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_STREAMLIT
-from tool_nexus.core.models import Tool
+from tool_nexus.core.constants import HEALTH_HTTP, HEALTH_PROCESS, KIND_LINK, KIND_STREAMLIT
+from tool_nexus.core.models import Tool, is_url
 from tool_nexus.process.control import (
     CreationDateLookup,
     PidStatus,
@@ -42,6 +43,8 @@ class Status(enum.Enum):
     FAILED = "failed"      # 起動できていない可能性がある
     STOPPED = "stopped"    # 停止
     UNKNOWN = "unknown"    # 監視しない / 判定できない
+    LINK = "link"          # リンク（起動しない。SPEC 6.10）
+    MISSING = "missing"    # リンク先のファイル／フォルダが見つからない
 
 
 STATUS_LABELS: dict[Status, str] = {
@@ -50,6 +53,8 @@ STATUS_LABELS: dict[Status, str] = {
     Status.FAILED: "起動できていない可能性があります",
     Status.STOPPED: "停止",
     Status.UNKNOWN: "不明",
+    Status.LINK: "リンク",
+    Status.MISSING: "リンク先が見つかりません",
 }
 
 
@@ -186,6 +191,13 @@ def _parse(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
+def link_status(tool: Tool) -> Status:
+    """リンクの状態。URL は常に LINK、ローカルはリンク先があれば LINK、無ければ MISSING。"""
+    if not tool.target or is_url(tool.target) or Path(tool.target).exists():
+        return Status.LINK
+    return Status.MISSING
+
+
 def derive_status(tool: Tool, alive: bool | None, *, now: datetime | None = None) -> Status:
     """生存確認の結果と起動記録から、表示用の状態を求める。
 
@@ -198,6 +210,8 @@ def derive_status(tool: Tool, alive: bool | None, *, now: datetime | None = None
     | 30秒超〜10分、その起動以降に一度もヘルスが通っていない | FAILED   |
     | それ以外（記録が古い・無い、起動後に一度は通った）     | STOPPED  |
     """
+    if tool.kind == KIND_LINK:
+        return link_status(tool)
     if alive is True:
         return Status.RUNNING
     if alive is None:

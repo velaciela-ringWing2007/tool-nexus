@@ -37,6 +37,7 @@ _TOOL_KEYS: dict[str, str] = {
     "autostart": "autostart",
     "description": "description",
     "sort_order": "sortOrder",
+    "target": "target",
 }
 
 

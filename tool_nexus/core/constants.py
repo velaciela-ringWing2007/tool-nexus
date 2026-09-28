@@ -19,11 +19,14 @@ KIND_STREAMLIT: Final[str] = "streamlit"
 KIND_WEB: Final[str] = "web"
 KIND_PYTHON: Final[str] = "python"
 KIND_EXE: Final[str] = "exe"
+# 起動も停止もせず開くだけ（URL・ローカルのファイル／フォルダ。SPEC 6.10）
+KIND_LINK: Final[str] = "link"
 KIND_LABELS: Final[dict[str, str]] = {
     KIND_STREAMLIT: "Streamlit",
     KIND_WEB: "Web",
     KIND_PYTHON: "Python",
     KIND_EXE: "EXE",
+    KIND_LINK: "リンク",
 }
 KIND_VALUES: Final[tuple[str, ...]] = tuple(KIND_LABELS)
 
@@ -45,6 +48,7 @@ DEFAULT_HEALTH_MODE_BY_KIND: Final[dict[str, str]] = {
     KIND_WEB: HEALTH_HTTP,
     KIND_PYTHON: HEALTH_PROCESS,
     KIND_EXE: HEALTH_PROCESS,
+    KIND_LINK: HEALTH_NONE,
 }
 
 # 起動コマンド中でポートに置き換える文字列。含まれていれば自動割当の対象になる。
@@ -61,6 +65,13 @@ MAX_PORT: Final[int] = 65535
 # 自動割当の範囲外に置き、さらに設定に関わらず常に割当候補から除外する
 # （停止中に他のツールへ割り当てると、TOOL NEXUS 自身が起動できなくなるため）。
 TOOL_NEXUS_PORT: Final[int] = 8499
+
+# リンク（ローカルのファイル）を配信する TOOL NEXUS 内のHTTPサーバーのポート（SPEC 6.10）。
+# TOOL NEXUS 自身のポートと同じく、自動割当の候補から常に除外する。
+LINK_SERVER_PORT: Final[int] = 8498
+
+# 「ファイルから入力」でリンクとして登録する拡張子
+LINK_SUFFIXES: Final[frozenset[str]] = frozenset({".html", ".htm", ".pdf", ".svg"})
 
 # ログ画面で表示する末尾の行数と、読み込む最大バイト数。
 LOG_TAIL_LINES: Final[int] = 300

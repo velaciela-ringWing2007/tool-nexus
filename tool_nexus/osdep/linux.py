@@ -38,7 +38,7 @@ LAUNCH_KWARGS: dict = {"start_new_session": True}
 
 POSIX_SPLIT = True
 DEFAULT_PYTHONS: tuple[str, ...] = ("python3", "python")
-EXECUTABLE_LABEL = ".py / 実行ファイル"
+EXECUTABLE_LABEL = ".py / 実行ファイル / .html"
 
 _SIGKILL: int = getattr(signal, "SIGKILL", 9)
 _LISTEN = "0A"  # /proc/net/tcp の st 列で LISTEN を表す値

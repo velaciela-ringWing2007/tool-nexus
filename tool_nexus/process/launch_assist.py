@@ -10,9 +10,11 @@
 
 from __future__ import annotations
 
+import html
 import re
 import shlex
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -20,9 +22,11 @@ from typing import Callable
 from tool_nexus import osdep
 from tool_nexus.core.constants import (
     KIND_EXE,
+    KIND_LINK,
     KIND_PYTHON,
     KIND_STREAMLIT,
     KIND_WEB,
+    LINK_SUFFIXES,
     PORT_PLACEHOLDER,
 )
 from tool_nexus.core.models import default_health_mode
@@ -67,6 +71,7 @@ class Suggestion:
     kind: str
     health_mode: str
     notes: list[str] = field(default_factory=list)
+    target: str = ""
 
 
 # ----------------------------------------------------------------------
@@ -182,6 +187,44 @@ def module_path(script: Path, root: Path) -> str:
     return ".".join(relative.parts)
 
 
+_HTML_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def html_title(path: Path) -> str:
+    """HTML の <title>。無ければ空。"""
+    if path.suffix.lower() not in (".html", ".htm"):
+        return ""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = _HTML_TITLE.search(head)
+    return " ".join(html.unescape(match.group(1)).split()) if match else ""
+
+
+def suggest_link(path: Path) -> Suggestion:
+    """HTML / PDF などはリンクとして登録する（SPEC 6.10）。"""
+    return Suggestion(
+        name=html_title(path) or path.stem,
+        directory="",
+        command="",
+        kind=KIND_LINK,
+        health_mode=default_health_mode(KIND_LINK),
+        notes=["リンクとして登録します。「開く」で TOOL NEXUS が配信し、同じフォルダのCSS・画像も表示されます。"],
+        target=str(path),
+    )
+
+
+def static_server_command(*, which: Callable[[str], str | None] = shutil.which) -> str:
+    """種別 web の既定コマンド。標準ライブラリの http.server で作業ディレクトリを配信する（SPEC 6.1）。"""
+    candidates = osdep.DEFAULT_PYTHONS
+    python = next((name for name in candidates if which(name)), None)
+    if python is None:
+        python = quote(sys.executable)  # 見つからなければ TOOL NEXUS 自身の Python
+    return f"{python} -m http.server {PORT_PLACEHOLDER} --bind 127.0.0.1"
+
+
 def suggest_from_file(
     file: Path | str, *, which: Callable[[str], str | None] = shutil.which
 ) -> Suggestion:
@@ -192,6 +235,8 @@ def suggest_from_file(
     suffix = path.suffix.lower()
     if suffix in (".bat", ".cmd"):
         raise AssistError(".bat / .cmd は登録できません（SPEC 6.9）。")
+    if suffix in LINK_SUFFIXES:
+        return suggest_link(path)
     if suffix != ".py" and not osdep.is_executable_file(path):
         raise AssistError(f"選べるのは {osdep.EXECUTABLE_LABEL} だけです。")
 
