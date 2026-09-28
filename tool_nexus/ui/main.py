@@ -13,6 +13,7 @@ from tool_nexus.core.database import DatabaseError
 from tool_nexus.process.link_server import ensure_server as ensure_link_server
 from tool_nexus.ui.dialogs import render_dialogs
 from tool_nexus.ui.layout import render_side_nav, render_toolbar, render_top_bar
+from tool_nexus.ui.log_filters import install as install_log_filters
 from tool_nexus.ui.settings_view import render_settings_screen
 from tool_nexus.ui.state import SCREEN_SETTINGS, get_repository, init_state, logger
 from tool_nexus.ui.styles import apply_styles
@@ -28,6 +29,8 @@ def main() -> None:
     )
     apply_styles()
     init_state()
+    # ブラウザを閉じたときの接続リセット（Windows の asyncio）のトレースバックを出さない
+    install_log_filters()
 
     try:
         repository = get_repository()

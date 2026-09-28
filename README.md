@@ -285,6 +285,10 @@ MIT License です。詳細は [LICENSE](LICENSE) を参照してください。
 TOOL NEXUS が起動していないか、ポート 8498 を別のプログラムが使っています（画面上部に警告が出ます）。
 TOOL NEXUS を起動した状態で開いてください。
 
+**ブラウザを閉じると `ConnectionResetError` のトレースバックが出る**
+Windows の Python（asyncio）で、ブラウザとの接続が突然切れたときに出るもので、動作には影響しません。
+TOOL NEXUS はこのログだけを出さないようにしています。古い版を使っている場合は `git pull` してください。
+
 **データを初期状態に戻したい**
 TOOL NEXUS を終了してから `data/tool_nexus.sqlite3`（および `-wal` / `-shm`）を削除してください。
 削除前に設定画面の「データ」でバックアップを保存しておくことを推奨します。
