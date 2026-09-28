@@ -56,7 +56,7 @@ class TestExport:
         assert item == {
             "name": "A", "kind": "streamlit", "directory": "/dev/x",
             "command": "python -m streamlit run app.py", "port": 8502, "healthMode": "http",
-            "logPath": "", "autostart": True, "description": "説明", "sortOrder": 0, "target": "",
+            "logPath": "", "autostart": True, "description": "説明", "sortOrder": 0, "target": "", "group": "",
         }
         text = export_bytes(repo).decode("utf-8")
         assert "123" not in text and "last" not in text.lower() and '"id"' not in text
@@ -155,9 +155,11 @@ class TestRestore:
 class TestRepositoryBulk:
     def test_update_order_matches_by_id(self, repo: ToolRepository) -> None:
         a, b = add(repo, "A", 8501), add(repo, "B", 8502)
-        repo.update_order([(b.id, 0, True), (a.id, 5, False)])
+        repo.update_order([(b.id, 0, True, "在庫"), (a.id, 5, False, "")])
         assert [t.name for t in repo.list_all()] == ["B", "A"]
         assert repo.get_by_id(b.id).autostart is True
+        assert repo.get_by_id(b.id).group_name == "在庫"
+        assert repo.group_names() == ["在庫"]
 
     def test_delete_many(self, repo: ToolRepository) -> None:
         a, _, c = add(repo, "A", 8501), add(repo, "B", 8502), add(repo, "C", 8503)

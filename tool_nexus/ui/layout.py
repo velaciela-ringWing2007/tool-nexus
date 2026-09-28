@@ -6,6 +6,7 @@ import streamlit as st
 
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.ui.actions import start_autostart_tools
+from tool_nexus.ui.grouping import SORT_OPTIONS
 from tool_nexus.ui.state import (
     KIND_TABS,
     SCREEN_SETTINGS,
@@ -53,6 +54,14 @@ def render_side_nav(repository: ToolRepository) -> None:
             options=list(STATUS_FILTERS),
             key="status_filter",
             label_visibility="collapsed",
+        )
+        st.markdown("### 並び順")
+        st.selectbox(
+            "並び順",
+            options=list(SORT_OPTIONS),
+            key="sort_key",
+            label_visibility="collapsed",
+            help="グループの中の並び順。手動の表示順は設定の「ツールの管理」で変えられます。",
         )
         st.markdown("---")
         st.caption(f"登録 {repository.count()} 件")

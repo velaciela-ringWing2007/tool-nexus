@@ -38,6 +38,7 @@ _TOOL_KEYS: dict[str, str] = {
     "description": "description",
     "sort_order": "sortOrder",
     "target": "target",
+    "group_name": "group",
 }
 
 

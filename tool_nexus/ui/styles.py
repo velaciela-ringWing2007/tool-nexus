@@ -363,6 +363,53 @@ _CSS = f"""
 [class*="st-key-tn-listhead"] [data-testid="stColumn"]:nth-child(1) {{ flex: 1 1 0 !important; }}
 [class*="st-key-tn-listhead"] [data-testid="stColumn"]:nth-child(2) {{ flex: 0 0 7.5rem !important; }}
 
+/* ---------- グループの見出し（SPEC 8.1） ---------- */
+[class*="st-key-tn-grouphead-"] {{
+    border-top: 1px solid rgba(34, 211, 238, 0.35);
+    border-left: 2px solid rgba(34, 211, 238, 0.35);
+    border-radius: 6px 0 0 0;
+    background: linear-gradient(90deg, rgba(34, 211, 238, 0.08), transparent 60%);
+    padding: 0.2rem 0.35rem;
+    margin-top: 0.7rem;
+}}
+[class*="st-key-tn-grouphead-"] [data-testid="stHorizontalBlock"] {{
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+}}
+[class*="st-key-tn-grouphead-"] [data-testid="stColumn"] {{ min-width: 0 !important; }}
+[class*="st-key-tn-grouphead-"] [data-testid="stColumn"]:nth-child(1) {{ flex: 0 0 2.3rem !important; }}
+[class*="st-key-tn-grouphead-"] [data-testid="stColumn"]:nth-child(2) {{ flex: 1 1 0 !important; }}
+[class*="st-key-tn-grouphead-"] [data-testid="stColumn"]:nth-child(3),
+[class*="st-key-tn-grouphead-"] [data-testid="stColumn"]:nth-child(4) {{ flex: 0 0 5.4rem !important; }}
+[class*="st-key-tn-grouphead-"] .stButton > button {{
+    padding: 0.2rem 0.3rem;
+    min-height: 2rem;
+}}
+.tn-group {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.8rem;
+}}
+.tn-group__name {{
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--tn-accent);
+    letter-spacing: 0.06em;
+    text-shadow: 0 0 8px rgba(34, 211, 238, 0.3);
+    word-break: break-word;
+}}
+.tn-group__name--ungrouped {{
+    color: var(--tn-muted);
+    text-shadow: none;
+}}
+.tn-group__count,
+.tn-group__running {{
+    font-size: 0.78rem;
+    color: var(--tn-muted);
+}}
+.tn-group__running strong {{ color: var(--tn-accent); }}
+
 /* ---------- 通知 ---------- */
 .tn-note {{
     border-left: 3px solid var(--tn-accent);
@@ -465,6 +512,18 @@ def render_port_link(port: int | None, url: str | None) -> None:
         f'<div class="tn-links"><span class="tn-port">{escape_html(port)}</span>{link}</div>',
         unsafe_allow_html=True,
     )
+
+
+def render_group_title(label: str, *, count: int, running: int, launchable: int, ungrouped: bool) -> None:
+    """グループの見出しの名前と件数（0ウィジェット）。label はエスケープする。"""
+    name_class = "tn-group__name" + (" tn-group__name--ungrouped" if ungrouped else "")
+    parts = [
+        f'<span class="{name_class}">{escape_html(label)}</span>',
+        f'<span class="tn-group__count">{count}件</span>',
+    ]
+    if launchable:
+        parts.append(f'<span class="tn-group__running">起動中 <strong>{running}</strong> / {launchable}</span>')
+    st.markdown(f'<div class="tn-group">{"".join(parts)}</div>', unsafe_allow_html=True)
 
 
 def render_summary(parts: Iterable[str]) -> None:

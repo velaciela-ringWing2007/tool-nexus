@@ -58,6 +58,9 @@ PORT_PLACEHOLDER: Final[str] = "{port}"
 DEFAULT_LOG_FILENAME: Final[str] = "tool-nexus.log"
 
 MAX_NAME_LENGTH: Final[int] = 200
+MAX_GROUP_LENGTH: Final[int] = 50
+# グループが空のツールの表示名（SPEC 6.11）
+UNGROUPED_LABEL: Final[str] = "未分類"
 MIN_PORT: Final[int] = 1
 MAX_PORT: Final[int] = 65535
 

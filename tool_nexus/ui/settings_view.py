@@ -8,7 +8,8 @@ import streamlit as st
 
 from tool_nexus.core.backup import MODE_LABELS as BACKUP_MODE_LABELS
 from tool_nexus.core.backup import MODE_REPLACE, BackupError, export_bytes, parse_backup, restore_backup
-from tool_nexus.core.constants import DATABASE_PATH, TOOL_NEXUS_PORT, kind_label
+from tool_nexus.core.constants import DATABASE_PATH, KIND_LINK, TOOL_NEXUS_PORT, kind_label
+from tool_nexus.core.models import ValidationError, normalize_group
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.core.settings import SETTING_LABELS, SettingsError, validate_settings
 from tool_nexus.ui.dialogs import render_detected_list
@@ -67,7 +68,7 @@ def render_settings_screen(repository: ToolRepository, settings: dict[str, str])
 
 
 def render_tool_management(repository: ToolRepository) -> None:
-    """表示順・まとめて起動の一括編集と、まとめて削除。
+    """グループ・表示順・まとめて起動の一括編集と、まとめて削除。
 
     行は非表示のID列で突き合わせる（並べ替え後に位置で照合すると別の行に適用されるため）。
     """
@@ -75,14 +76,15 @@ def render_tool_management(repository: ToolRepository) -> None:
     if not tools:
         render_note("ツールが登録されていません。")
         return
-    st.caption("表示順と「まとめて起動」を表で編集できます。削除する行は「選択」にチェックしてください。")
+    st.caption("グループ・表示順・「まとめて起動」を表で編集できます。削除する行は「選択」にチェックしてください。")
     rows = [
         {
             "ID": tool.id,
             "選択": False,
             "名前": tool.name,
             "種別": kind_label(tool.kind),
-            "ポート": tool.port,
+            "グループ": tool.group_name,
+            "ポート": str(tool.port) if tool.port else "",  # リンクなどポートの無いものは空欄
             "表示順": tool.sort_order,
             "まとめて起動": tool.autostart,
         }
@@ -100,22 +102,32 @@ def render_tool_management(repository: ToolRepository) -> None:
             "ID": None,
             "選択": st.column_config.CheckboxColumn("選択", width="small"),
             "名前": st.column_config.TextColumn("名前", width="large"),
-            "ポート": st.column_config.NumberColumn("ポート", format="%d", width="small"),
+            "グループ": st.column_config.TextColumn("グループ", width="medium", help="空欄は未分類"),
+            "ポート": st.column_config.TextColumn("ポート", width="small"),
             "表示順": st.column_config.NumberColumn("表示順", step=1, format="%d", width="small"),
             "まとめて起動": st.column_config.CheckboxColumn("まとめて起動", width="small"),
         },
     )
 
     by_id = {tool.id: tool for tool in tools}
-    changes = [
-        (row["ID"], int(row["表示順"] or 0), bool(row["まとめて起動"]))
-        for row in edited
-        if row.get("ID") in by_id
-        and (
-            int(row["表示順"] or 0) != by_id[row["ID"]].sort_order
-            or bool(row["まとめて起動"]) != by_id[row["ID"]].autostart
-        )
-    ]
+    changes: list[tuple[int, int, bool, str]] = []
+    errors: list[str] = []
+    for row in edited:
+        tool = by_id.get(row.get("ID"))
+        if tool is None:
+            continue
+        try:
+            group = normalize_group(row.get("グループ"))
+        except ValidationError as exc:
+            errors.append(f"{tool.name}: {exc}")
+            continue
+        # まとめて起動はリンクには付けない（起動しないため）
+        autostart = bool(row["まとめて起動"]) and tool.kind != KIND_LINK
+        order = int(row["表示順"] or 0)
+        if (order, autostart, group) != (tool.sort_order, tool.autostart, tool.group_name):
+            changes.append((int(tool.id), order, autostart, group))
+    for error in errors:
+        st.error(error, icon="⛔")
     selected = [by_id[row["ID"]] for row in edited if row.get("選択") and row.get("ID") in by_id]
 
     save_col, _ = st.columns([1.5, 4])
@@ -127,7 +139,7 @@ def render_tool_management(repository: ToolRepository) -> None:
         key="manage_save",
     ):
         repository.update_order(changes)
-        flash(f"{len(changes)}件の表示順・まとめて起動を保存しました。")
+        flash(f"{len(changes)}件のグループ・表示順・まとめて起動を保存しました。")
         st.rerun()
 
     if selected:

@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime
 
 import streamlit as st
 
-from tool_nexus.core.constants import KIND_LINK, health_mode_label, kind_label
+from tool_nexus.core.constants import KIND_LINK, UNGROUPED_LABEL, health_mode_label, kind_label
 from tool_nexus.core.models import Tool, is_url
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.core.settings import parse_interval
 from tool_nexus.process.health import Status, ToolHealth, derive_status, is_check_due, probe_all
 from tool_nexus.process.link_server import link_url
-from tool_nexus.ui.actions import start_tool, stop_tool
+from tool_nexus.ui.actions import start_group, start_tool, stop_group, stop_tool
+from tool_nexus.ui.grouping import group_healths, sort_healths
 from tool_nexus.ui.state import (
     KIND_ALL,
     STATUS_FILTERS,
@@ -22,9 +24,11 @@ from tool_nexus.ui.state import (
     open_dialog,
     render_flash,
     request_check,
+    toggle_group,
 )
 from tool_nexus.ui.styles import (
     escape_html,
+    render_group_title,
     render_note,
     render_port_link,
     render_summary,
@@ -145,7 +149,8 @@ def matches_query(tool: Tool, query: str) -> bool:
     if not query:
         return True
     haystack = " ".join(
-        [tool.name, tool.directory, tool.command, tool.target, tool.description, str(tool.port or "")]
+        [tool.name, tool.group_name, tool.directory, tool.command, tool.target, tool.description,
+         str(tool.port or "")]
     ).lower()
     return all(word in haystack for word in query.lower().split())
 
@@ -233,5 +238,63 @@ def render_tool_list(repository: ToolRepository, settings: dict[str, str]) -> No
         render_note("この状態のツールはありません。")
         return
 
-    for health in shown:
-        render_tool_row(repository, settings, health)
+    for group, items in group_healths(sort_healths(shown, st.session_state["sort_key"])):
+        collapsed = group in st.session_state["collapsed_groups"]
+        render_group_header(repository, settings, group, items, collapsed=collapsed)
+        if collapsed:
+            continue  # 畳んだグループの行は描画しない（ウィジェットを増やさない）
+        for health in items:
+            render_tool_row(repository, settings, health)
+
+
+def group_key(group: str) -> str:
+    """ウィジェットのキーに使う、グループ名から作った短い識別子（名前には任意の文字が入るため）。"""
+    return hashlib.sha1(group.encode("utf-8")).hexdigest()[:10]
+
+
+def render_group_header(
+    repository: ToolRepository,
+    settings: dict[str, str],
+    group: str,
+    items: list[ToolHealth],
+    *,
+    collapsed: bool,
+) -> None:
+    """グループの見出し: 開閉・名前と件数・グループの起動／停止（SPEC 6.11 / 8.1）。
+
+    ウィジェットは開閉・起動・停止の3つ。「未分類」とリンクだけのグループには起動・停止を置かない。
+    起動・停止はグループ全体（一覧の絞り込みに関係なく）が対象。
+    """
+    key = group_key(group)
+    launchable = [h for h in items if h.tool.kind != KIND_LINK]
+    running = sum(h.status is Status.RUNNING for h in launchable)
+    with st.container(key=f"tn-grouphead-{key}"):
+        toggle_col, title_col, start_col, stop_col = st.columns([0.4, 8, 1.1, 1.1], vertical_alignment="center")
+        toggle_col.button(
+            ":material/chevron_right:" if collapsed else ":material/expand_more:",
+            key=f"grp_toggle_{key}",
+            help="開く" if collapsed else "畳む",
+            on_click=toggle_group,
+            args=(group,),
+            use_container_width=True,
+        )
+        with title_col:
+            render_group_title(
+                group or UNGROUPED_LABEL,
+                count=len(items),
+                running=running,
+                launchable=len(launchable),
+                ungrouped=not group,
+            )
+        if not group or not launchable:
+            return  # 未分類と、リンクだけのグループには起動・停止を置かない
+        if start_col.button("起動", icon=":material/play_arrow:", key=f"grp_start_{key}",
+                            help=f"「{group}」の停止中のツールを表示順に起動", use_container_width=True):
+            with st.spinner(f"「{group}」を起動しています…"):
+                start_group(repository, settings, group)
+            st.rerun(scope="fragment")
+        if stop_col.button("停止", icon=":material/stop:", key=f"grp_stop_{key}",
+                           help=f"「{group}」の起動中のツールを停止", use_container_width=True):
+            with st.spinner(f"「{group}」を停止しています…"):
+                stop_group(repository, settings, group)
+            st.rerun(scope="fragment")

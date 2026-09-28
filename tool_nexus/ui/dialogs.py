@@ -16,6 +16,7 @@ from tool_nexus.core.constants import (
     LOG_TAIL_BYTES,
     LOG_TAIL_LINES,
     TOOL_NEXUS_PORT,
+    UNGROUPED_LABEL,
     health_mode_label,
     kind_label,
 )
@@ -164,7 +165,21 @@ def render_command_preview(values: dict[str, Any]) -> None:
     st.code(shown, language=None, wrap_lines=True)
 
 
-def render_tool_form() -> dict[str, Any]:
+def render_group_field(groups: list[str]) -> None:
+    """グループ: 既存の名前から選ぶか、新しい名前を入力する（SPEC 6.11）。空は未分類。"""
+    current = str(st.session_state.get("form_group") or "")
+    options = ["", *groups] + ([current] if current and current not in groups else [])
+    st.selectbox(
+        "グループ",
+        options=options,
+        format_func=lambda value: value or f"（{UNGROUPED_LABEL}）",
+        key="form_group",
+        accept_new_options=True,
+        help="既存のグループから選ぶか、新しい名前を入力します。グループ単位でまとめて起動・停止できます。",
+    )
+
+
+def render_tool_form(groups: list[str]) -> dict[str, Any]:
     pick_col, note_col = st.columns([1.6, 5], vertical_alignment="center")
     pick_col.button(
         "ファイルから入力",
@@ -182,7 +197,10 @@ def render_tool_form() -> dict[str, Any]:
         else:
             st.info(note, icon="ℹ️")
 
-    st.text_input("名前 *", key="form_name", placeholder="在庫チェッカー")
+    name_col, group_col = st.columns([3, 2])
+    name_col.text_input("名前 *", key="form_name", placeholder="在庫チェッカー")
+    with group_col:
+        render_group_field(groups)
     left, right = st.columns(2)
     with left:
         st.selectbox(
@@ -200,6 +218,7 @@ def render_tool_form() -> dict[str, Any]:
             "directory": "",
             "command": "",
             "target": st.session_state["form_target"],
+            "group_name": st.session_state["form_group"] or "",
             "description": st.session_state["form_description"],
             "sort_order": st.session_state["form_sort_order"],
         }
@@ -256,6 +275,7 @@ def render_tool_form() -> dict[str, Any]:
         "autostart": st.session_state["form_autostart"],
         "description": st.session_state["form_description"],
         "sort_order": st.session_state["form_sort_order"],
+        "group_name": st.session_state["form_group"] or "",
     }
     render_command_preview(values)
     return values
@@ -298,7 +318,7 @@ def save_tool(
 
 @st.dialog("ツールを追加", width="large", on_dismiss=close_dialog)
 def create_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
-    values = render_tool_form()
+    values = render_tool_form(repository.group_names())
     save_col, cancel_col = st.columns(2)
     if save_col.button("登録", type="primary", use_container_width=True, key="create_submit"):
         result = save_tool(repository, settings, values, None)
@@ -332,7 +352,7 @@ def edit_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
         render_missing_target()
         return
 
-    values = render_tool_form()
+    values = render_tool_form(repository.group_names())
     save_col, cancel_col = st.columns(2)
     if save_col.button("更新", type="primary", use_container_width=True, key="edit_submit"):
         result = save_tool(repository, settings, values, target.id)

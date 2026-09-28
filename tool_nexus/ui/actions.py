@@ -1,4 +1,4 @@
-"""起動・停止・まとめて起動（画面から呼ぶ操作）."""
+"""起動・停止・まとめて起動・グループの起動／停止（画面から呼ぶ操作）."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from tool_nexus.process.control import (
     resolve_log_path,
     stop,
 )
-from tool_nexus.process.health import Status, derive_status, probe_all
+from tool_nexus.process.health import ToolHealth, derive_status, probe_all
+from tool_nexus.ui.grouping import StopSummary, should_start, should_stop
 from tool_nexus.ui.state import flash, health_timeout, request_check
 
 # 停止後にポートの解放を確認する時間
@@ -111,22 +112,87 @@ def report_stopped(tool: Tool) -> None:
         flash(f"「{tool.name}」を停止しました。")
 
 
+def current_health(repository: ToolRepository, settings: dict[str, str], tools: list[Tool]) -> list[ToolHealth]:
+    """一覧の表示（フィルター・キャッシュ）に関係なく、今の状態を確認する。"""
+    alive_by_id = probe_all(tools, timeout=health_timeout(settings))
+    return [ToolHealth(t, alive_by_id.get(int(t.id)), derive_status(t, alive_by_id.get(int(t.id)))) for t in tools]
+
+
+def start_tools(repository: ToolRepository, settings: dict[str, str], tools: list[Tool]) -> tuple[int, int]:
+    """起動していないものを順に起動する。起動中・起動中…・リンクは飛ばす。(起動した件数, 飛ばした件数)。"""
+    started = skipped = 0
+    for health in current_health(repository, settings, tools):
+        if not should_start(health):
+            skipped += 1
+            continue
+        start_tool(repository, settings, health.tool)
+        started += 1
+    return started, skipped
+
+
 def start_autostart_tools(repository: ToolRepository, settings: dict[str, str]) -> None:
     """「まとめて起動」の対象を順に起動する。起動中・起動中…のものは飛ばす（二重起動しない）。"""
     tools = [tool for tool in repository.list_all() if tool.autostart]
     if not tools:
         flash("まとめて起動の対象がありません。編集画面で「まとめて起動の対象にする」を有効にしてください。", "warning")
         return
-    alive_by_id = probe_all(tools, timeout=health_timeout(settings))
-    started = skipped = 0
-    for tool in tools:
-        alive = alive_by_id.get(int(tool.id))
-        status = derive_status(tool, alive)
-        # 監視しない設定（不明）でも起動記録が残っていれば動いている可能性があるので飛ばす
-        if status in (Status.RUNNING, Status.STARTING) or (status is Status.UNKNOWN and tool.last_pid):
-            skipped += 1
-            continue
-        start_tool(repository, settings, tool)
-        started += 1
+    started, skipped = start_tools(repository, settings, tools)
     flash(f"まとめて起動: {started} 件を起動しました（起動済みのため {skipped} 件を飛ばしました）。")
+    request_check()
+
+
+def group_members(repository: ToolRepository, group: str) -> list[Tool]:
+    """グループのツール（表示順）。一覧のフィルターとは関係なく、グループ全体を対象にする。"""
+    return [tool for tool in repository.list_all() if tool.group_name == group]
+
+
+def start_group(repository: ToolRepository, settings: dict[str, str], group: str) -> None:
+    """グループ内の起動していないツールを表示順に続けて起動する（SPEC 6.11）。"""
+    started, skipped = start_tools(repository, settings, group_members(repository, group))
+    flash(f"「{group}」: {started} 件を起動しました（起動済み・リンクの {skipped} 件を飛ばしました）。")
+    request_check()
+
+
+def stop_tools(repository: ToolRepository, healths: list[ToolHealth], *, stopper=stop) -> StopSummary:
+    """起動中のものを停止する。特定できないものは止めずに summary.not_identified に入れる。
+
+    1件ずつ確認ダイアログは出さない（グループの停止で煩わしくなるため。SPEC 6.11）。
+    """
+    summary = StopSummary()
+    for health in healths:
+        tool = health.tool
+        if not should_stop(health):
+            continue
+        try:
+            stopper(tool.last_pid, tool.last_pid_created_at)
+        except ProcessNotIdentifiedError as exc:
+            if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
+                repository.clear_pid(int(tool.id))
+            summary.not_identified.append(tool.name)
+            continue
+        except StopError as exc:
+            summary.failed.append(f"{tool.name}: {exc}")
+            continue
+        repository.record_stop(int(tool.id))
+        summary.stopped.append(tool.name)
+    return summary
+
+
+def stop_group(repository: ToolRepository, settings: dict[str, str], group: str) -> None:
+    """グループ内の起動中のツールを停止する（SPEC 6.11）。"""
+    tools = group_members(repository, group)
+    summary = stop_tools(repository, current_health(repository, settings, tools))
+    if summary.stopped:
+        flash(f"「{group}」: {len(summary.stopped)} 件を停止しました（{'、'.join(summary.stopped)}）。")
+    elif not summary.not_identified and not summary.failed:
+        flash(f"「{group}」: 起動中のツールはありません。", "warning")
+    if summary.not_identified:
+        flash(
+            f"「{group}」: 次のツールは対象のプロセスを特定できなかったため、停止していません: "
+            f"{'、'.join(summary.not_identified)}。TOOL NEXUS の外で起動された可能性があります。"
+            "必要なら各行の「停止」から、ポートで探して停止してください。",
+            "warning",
+        )
+    for failure in summary.failed:
+        flash(f"停止できませんでした: {failure}", "error")
     request_check()

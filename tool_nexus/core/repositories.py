@@ -17,7 +17,7 @@ from tool_nexus.core.models import Tool, now_iso, row_to_tool, tool_to_params
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,
     description, sort_order, last_pid, last_pid_created_at, last_started_at,
-    last_stopped_at, last_seen_at, target, created_at, updated_at
+    last_stopped_at, last_seen_at, target, group_name, created_at, updated_at
 """
 
 # 既定の並び順: 表示順 → 名前
@@ -80,6 +80,14 @@ class ToolRepository:
             rows = connection.execute("SELECT port FROM tools WHERE port IS NOT NULL").fetchall()
         return {int(row["port"]) for row in rows}
 
+    def group_names(self) -> list[str]:
+        """登録済みのグループ名（空を除く、名前順）。"""
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT group_name FROM tools WHERE group_name <> '' ORDER BY group_name COLLATE NOCASE"
+            ).fetchall()
+        return [row["group_name"] for row in rows]
+
     def count(self) -> int:
         with connect(self.db_path) as connection:
             row = connection.execute("SELECT COUNT(*) AS n FROM tools").fetchone()
@@ -101,10 +109,10 @@ class ToolRepository:
                     """
                     INSERT INTO tools (
                         name, kind, directory, command, port, health_mode, log_path,
-                        autostart, description, sort_order, target, created_at, updated_at
+                        autostart, description, sort_order, target, group_name, created_at, updated_at
                     ) VALUES (
                         :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                        :autostart, :description, :sort_order, :target, :created_at, :updated_at
+                        :autostart, :description, :sort_order, :target, :group_name, :created_at, :updated_at
                     )
                     """,
                     params,
@@ -131,6 +139,7 @@ class ToolRepository:
                         command = :command, port = :port, health_mode = :health_mode,
                         log_path = :log_path, autostart = :autostart,
                         description = :description, sort_order = :sort_order, target = :target,
+                        group_name = :group_name,
                         updated_at = :updated_at
                     WHERE id = :id
                     """,
@@ -167,18 +176,23 @@ class ToolRepository:
             raise DatabaseError("ツールの削除に失敗しました。") from exc
         return cursor.rowcount
 
-    def update_order(self, changes: Iterable[tuple[int, int, bool]]) -> int:
-        """(ID, 表示順, まとめて起動) の組で一括更新する。更新した件数を返す。
+    def update_order(self, changes: Iterable[tuple[int, int, bool, str]]) -> int:
+        """(ID, 表示順, まとめて起動, グループ) の組で一括更新する。更新した件数を返す。
 
         行はIDで突き合わせる（表の並べ替え後に位置で照合すると別の行に適用されるため）。
+        グループ名は呼び出し側で正規化しておく（models.normalize_group）。
         """
-        rows = [(int(order), 1 if autostart else 0, now_iso(), int(tool_id)) for tool_id, order, autostart in changes]
+        rows = [
+            (int(order), 1 if autostart else 0, group, now_iso(), int(tool_id))
+            for tool_id, order, autostart, group in changes
+        ]
         if not rows:
             return 0
         try:
             with connect(self.db_path) as connection, transaction(connection):
                 cursor = connection.executemany(
-                    "UPDATE tools SET sort_order = ?, autostart = ?, updated_at = ? WHERE id = ?", rows
+                    "UPDATE tools SET sort_order = ?, autostart = ?, group_name = ?, updated_at = ? WHERE id = ?",
+                    rows,
                 )
         except sqlite3.Error as exc:
             raise DatabaseError("表示順の更新に失敗しました。") from exc
@@ -202,10 +216,10 @@ class ToolRepository:
                         """
                         INSERT INTO tools (
                             name, kind, directory, command, port, health_mode, log_path,
-                            autostart, description, sort_order, target, created_at, updated_at
+                            autostart, description, sort_order, target, group_name, created_at, updated_at
                         ) VALUES (
                             :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                            :autostart, :description, :sort_order, :target, :created_at, :updated_at
+                            :autostart, :description, :sort_order, :target, :group_name, :created_at, :updated_at
                         )
                         """,
                         record,

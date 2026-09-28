@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS tools (
     last_started_at TEXT,
     last_stopped_at TEXT,
     target TEXT NOT NULL DEFAULT '',
+    group_name TEXT NOT NULL DEFAULT '',
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -106,6 +107,9 @@ def _migrate(connection: sqlite3.Connection) -> None:
     if "target" not in columns:
         # リンク先（種別 link のみ。SPEC 6.10）
         connection.execute("ALTER TABLE tools ADD COLUMN target TEXT NOT NULL DEFAULT ''")
+    if "group_name" not in columns:
+        # グループ（SPEC 6.11）
+        connection.execute("ALTER TABLE tools ADD COLUMN group_name TEXT NOT NULL DEFAULT ''")
 
 
 def initialize_database(db_path: Path | str = DATABASE_PATH) -> None:

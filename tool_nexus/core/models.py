@@ -17,10 +17,12 @@ from tool_nexus.core.constants import (
     KIND_LINK,
     KIND_STREAMLIT,
     KIND_VALUES,
+    MAX_GROUP_LENGTH,
     MAX_NAME_LENGTH,
     MAX_PORT,
     MIN_PORT,
     PORT_PLACEHOLDER,
+    UNGROUPED_LABEL,
 )
 from tool_nexus.process.control import split_command
 
@@ -49,6 +51,7 @@ class Tool:
     description: str = ""
     sort_order: int = 0
     target: str = ""
+    group_name: str = ""
     last_pid: int | None = None
     last_pid_created_at: str | None = None
     last_started_at: str | None = None
@@ -82,6 +85,7 @@ def row_to_tool(row: sqlite3.Row) -> Tool:
         last_started_at=row["last_started_at"],
         last_stopped_at=row["last_stopped_at"],
         target=row["target"] or "",
+        group_name=row["group_name"] or "",
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
@@ -105,6 +109,7 @@ def tool_to_params(tool: Tool) -> dict[str, Any]:
         "description": tool.description,
         "sort_order": tool.sort_order,
         "target": tool.target,
+        "group_name": tool.group_name,
     }
 
 
@@ -158,6 +163,16 @@ def normalize_directory(raw: str | None, *, check_exists: bool) -> str:
     if check_exists and not Path(directory).is_dir():
         raise ValidationError(f"作業ディレクトリが見つかりません: {directory}")
     return directory
+
+
+def normalize_group(raw: str | None) -> str:
+    """グループ名を正規化する。空は未分類。"""
+    group = " ".join((raw or "").split())
+    if group == UNGROUPED_LABEL:
+        return ""
+    if len(group) > MAX_GROUP_LENGTH:
+        raise ValidationError(f"グループ名が長すぎます。{MAX_GROUP_LENGTH}文字以内で入力してください。")
+    return group
 
 
 def is_url(value: str) -> bool:
@@ -233,6 +248,7 @@ def build_tool(
     description: str | None = "",
     sort_order: Any = 0,
     target: str | None = "",
+    group_name: str | None = "",
     check_directory: bool = True,
 ) -> Tool:
     """入力値を検証・正規化して Tool を組み立てる。
@@ -257,6 +273,7 @@ def build_tool(
             description=(description or "").strip(),
             sort_order=normalize_sort_order(sort_order),
             target=normalize_target(target, check_exists=check_directory),
+            group_name=normalize_group(group_name),
         )
     normalized_mode = normalize_health_mode(health_mode, normalized_kind)
     normalized_port = normalize_port(port)
@@ -283,4 +300,5 @@ def build_tool(
         autostart=bool(autostart),
         description=(description or "").strip(),
         sort_order=normalize_sort_order(sort_order),
+        group_name=normalize_group(group_name),
     )

@@ -13,6 +13,7 @@ from tool_nexus.core.constants import DATABASE_PATH, KIND_LABELS, KIND_STREAMLIT
 from tool_nexus.core.models import Tool, default_health_mode
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.process.health import Status
+from tool_nexus.ui.grouping import SORT_MANUAL
 
 logger = logging.getLogger("tool_nexus")
 
@@ -46,6 +47,7 @@ FORM_KEYS: dict[str, Any] = {
     "form_description": "",
     "form_sort_order": 0,
     "form_target": "",
+    "form_group": "",
 }
 
 # 画面
@@ -71,6 +73,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "health_checked_label": "",
     "force_check": False,
     "flash": [],
+    "sort_key": SORT_MANUAL,
+    "collapsed_groups": [],
 }
 
 
@@ -85,7 +89,17 @@ def get_repository() -> ToolRepository:
 
 def init_state() -> None:
     for key, value in DEFAULT_STATE.items():
-        st.session_state.setdefault(key, value.copy() if isinstance(value, list) else value)
+        # list / dict は複製する（同じオブジェクトを全セッションで共有しないように）
+        st.session_state.setdefault(key, value.copy() if isinstance(value, (list, dict)) else value)
+
+
+def toggle_group(group: str) -> None:
+    """グループの開閉を切り替える（SPEC 8.1）。"""
+    collapsed: list[str] = st.session_state["collapsed_groups"]
+    if group in collapsed:
+        collapsed.remove(group)
+    else:
+        collapsed.append(group)
 
 
 def flash(message: str, level: str = "success") -> None:
@@ -134,6 +148,7 @@ def prime_form(tool: Tool | None = None, overrides: dict[str, Any] | None = None
                 "form_description": tool.description,
                 "form_sort_order": tool.sort_order,
                 "form_target": tool.target,
+                "form_group": tool.group_name,
             }
         )
     values.update(overrides or {})
