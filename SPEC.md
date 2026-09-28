@@ -44,6 +44,7 @@ tool-nexus/
 │  │  ├─ base.py            … 例外・データ型・起動時刻の正規化
 │  │  ├─ control.py         … 起動・停止・PID照合・検出（6.2, 6.3, 6.6）
 │  │  ├─ health.py          … 死活監視と表示用の状態（6.4）
+│  │  ├─ link_server.py     … リンク（ローカルのファイル）の配信（6.10）
 │  │  └─ launch_assist.py   … ファイル選択と起動方式の推測（6.9）
 │  ├─ osdep/                … OS依存機能の切り替え（3.2）
 │  │  ├─ __init__.py        … 実行中のOSに応じて windows / linux を選ぶ
@@ -228,8 +229,19 @@ FlaskとFastAPIは動き方が同じ（指定ポートでHTTPを待ち受ける�
 | `web` | Flask、FastAPI（uvicorn）など | — | `/` に何らかのHTTP応答 | `http` |
 | `python` | 素のPythonスクリプト | — | `/` に何らかのHTTP応答 | `process` |
 | `exe` | 実行ファイル | — | `/` に何らかのHTTP応答 | `process` |
+| `link` | URL・ローカルのファイル／フォルダ（6.10） | — | 監視しない（起動しない） | `none` |
 
 `kind` 列は文字列なので、種別を増やしてもDBの移行は要らない（7.1）。
+
+**種別を `web` にしたとき、起動コマンドが空なら静的ファイルサーバーのコマンドを入れる**：
+
+```text
+py -m http.server {port} --bind 127.0.0.1        （Linux は python3）
+```
+
+`http.server` は標準ライブラリなので venv は不要。作業ディレクトリのフォルダがそのまま配信される。
+Python は 6.9 と同じく `py`（Linux は `python3`）を優先し、見つからなければ TOOL NEXUS 自身の Python を使う。
+既に何か入力されていれば上書きしない。
 
 登録時の検証：
 
@@ -566,6 +578,38 @@ TOOL NEXUSはサーバーとブラウザが同じPCで動くので、**サーバ
 
 ---
 
+### 6.10 リンク（種別 `link`）
+
+起動も停止もせず、**開くだけ**の登録。自作ツールの README から作った静的HTMLや、よく見るWebページを
+ツールと同じ一覧にまとめる。
+
+| 項目 | 内容 |
+| --- | --- |
+| リンク先（`target`） | URL（`http` / `https`）、またはローカルのファイル／フォルダの**絶対パス** |
+| 一覧の表示 | 起動・停止・ログのボタンは出さず、「開く」だけ（ウィジェットを増やさない） |
+| 状態 | URL は「リンク」。ローカルは存在すれば「リンク」、無ければ「見つかりません」（要確認に分類） |
+| 死活監視 | しない（`none` 固定）。ポートは持たない |
+| まとめて起動 | 対象外 |
+| ファイルから入力 | `.html` / `.htm` / `.pdf` / `.svg` を選ぶとリンクとして登録する。名前はHTMLの `<title>`、無ければファイル名 |
+
+#### ローカルのファイルの配信
+
+ブラウザは `http://` のページから `file:///` へのリンクをブロックするため、ローカルのファイルは
+**TOOL NEXUS 自身が小さなHTTPサーバーで配信する**。
+
+* TOOL NEXUS のプロセス内で `http.server.ThreadingHTTPServer` を1つだけ動かす（Streamlit の再実行では作り直さない）
+* 待ち受けは `127.0.0.1:8498` のみ。8499（TOOL NEXUS 自身）と同じく、自動割当の候補から常に除外する
+* URL は `http://127.0.0.1:8498/links/<ID>/<相対パス>`
+  * ファイルのリンク：そのファイルのフォルダを起点に配信する（同じフォルダのCSS・画像・相対リンクが効く）。
+    「開く」はそのファイルを指す
+  * フォルダのリンク：そのフォルダを起点に配信する。`index.html` があればそれ、無ければファイル一覧を表示する
+* **登録したリンクの起点フォルダの外は配信しない**（`..` やシンボリックリンクで外に出るパスは 404）
+* リクエストのたびにDBからリンクを引くので、登録・削除はすぐに反映される
+* GET / HEAD のみ。TOOL NEXUS を終了すると配信も止まる
+* ポート 8498 が使えない場合（別の TOOL NEXUS が動いているなど）は、画面にその旨を出し、ローカルのリンクは開けない
+
+URL のリンクは、そのURLをそのまま新しいタブで開く。
+
 ## 7. データモデル
 
 ### 7.1 toolsテーブル
@@ -587,6 +631,7 @@ CREATE TABLE IF NOT EXISTS tools (
     last_pid_created_at TEXT,                     -- 秒精度ISO 8601に正規化
     last_started_at TEXT,
     last_stopped_at TEXT,                         -- 停止操作の記録（6.4）
+    target TEXT NOT NULL DEFAULT '',              -- リンク先（link のみ。6.10）
     last_seen_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -599,7 +644,7 @@ CREATE TABLE IF NOT EXISTS tools (
 
 `last_pid` と `last_pid_created_at` は常に対で保存・消去する。
 
-`last_stopped_at` は後から足した列。既存のDBには起動時の移行（`database._migrate`）で `ALTER TABLE` により追加する。
+`last_stopped_at` と `target` は後から足した列。種別 `link` では `directory` と `command` は空文字にする。既存のDBには起動時の移行（`database._migrate`）で `ALTER TABLE` により追加する。
 PID単体では再利用を見分けられないため、片方だけを信用しない。
 
 `port` をNULL許容にし、`health_mode` を最初から列として持つこと。
@@ -639,7 +684,8 @@ CREATE TABLE IF NOT EXISTS settings (
     {
       "name": "在庫チェッカー", "kind": "streamlit", "directory": "C:\\dev\\tool-a",
       "command": ".venv\\Scripts\\python.exe -m streamlit run app.py", "port": 8502,
-      "healthMode": "http", "logPath": "", "autostart": true, "description": "", "sortOrder": 0
+      "healthMode": "http", "logPath": "", "autostart": true, "description": "", "sortOrder": 0,
+      "target": ""
     }
   ]
 }
@@ -776,6 +822,11 @@ pytestで以下を検証する。UIの自動テストは必須としない。
 * `{port}` の置き換え、ポート未登録で `{port}` があれば起動しないこと
 * 検出: プロセス一覧とLISTEN一覧の突き合わせ（親子の扱い、TOOL NEXUS自身・登録済みの除外、作業ディレクトリの推測）
 
+### link_server（リンクの配信）
+* 起点フォルダ内のファイルを返す、フォルダの `index.html`、一覧の表示
+* 起点の外（`..`、エンコードされた `..`、シンボリックリンク）は 404、未登録のIDは 404、URL のリンクは 404
+* 実際に `127.0.0.1` で起動してHTTPで取得できること
+
 ### launch_assist
 * ルートの推測（マーカーが無い場合はファイルのフォルダ）
 * venvの検出（`.venv` 以外の名前、`pyvenv.cfg` の無いフォルダを無視）、uv、どちらも無い場合
@@ -857,6 +908,10 @@ LIST NEXUS（Streamlit 1.60）で計測した値。
 ### Phase 3.5
 * OS依存部分の切り出し（3.2）とLinux対応
 * GitHub Actions（Windows / Ubuntu）
+
+### Phase 5
+* 種別 `link` とリンクの配信（6.10）
+* 種別 `web` の静的ファイルサーバーの既定コマンド（6.1）
 
 ### Phase 4
 * 設定画面（ツールの管理・検出・動作設定・データ）
