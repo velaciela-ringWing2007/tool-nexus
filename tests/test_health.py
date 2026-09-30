@@ -222,6 +222,21 @@ class TestDeriveStatus:
         tool = make_tool(last_started_at=STARTED, last_stopped_at=STARTED)
         assert derive_status(tool, False, now=at(1)) is Status.STOPPED
 
+    def test_restart_within_the_same_second_is_starting(self) -> None:
+        # 再起動では停止の直後に起動するので、同じ秒の中で「停止 → 起動」の順になる（実機で発覚）
+        tool = make_tool(
+            last_stopped_at="2026-09-27T13:45:01.100000+09:00",
+            last_started_at="2026-09-27T13:45:01.900000+09:00",
+        )
+        assert derive_status(tool, False, now=at(3)) is Status.STARTING
+
+    def test_stop_right_after_start_within_the_same_second_is_stopped(self) -> None:
+        tool = make_tool(
+            last_started_at="2026-09-27T13:45:01.100000+09:00",
+            last_stopped_at="2026-09-27T13:45:01.900000+09:00",
+        )
+        assert derive_status(tool, False, now=at(3)) is Status.STOPPED
+
     def test_restart_after_stop_is_starting(self) -> None:
         tool = make_tool(last_started_at=STARTED, last_stopped_at="2026-09-27T13:40:00+09:00")
         assert derive_status(tool, False, now=at(5)) is Status.STARTING

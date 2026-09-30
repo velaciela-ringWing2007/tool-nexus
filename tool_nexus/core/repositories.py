@@ -12,7 +12,7 @@ from typing import Iterable
 
 from tool_nexus.core.constants import DEFAULT_SETTINGS
 from tool_nexus.core.database import DatabaseError, connect, initialize_database, transaction
-from tool_nexus.core.models import Tool, now_iso, row_to_tool, tool_to_params
+from tool_nexus.core.models import Tool, now_iso, now_iso_precise, row_to_tool, tool_to_params
 
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,
@@ -244,7 +244,7 @@ class ToolRepository:
             UPDATE tools SET last_pid = ?, last_pid_created_at = ?, last_started_at = ?
             WHERE id = ?
             """,
-            (*pair, now_iso(), tool_id),
+            (*pair, now_iso_precise(), tool_id),
         )
 
     def clear_pid(self, tool_id: int) -> None:
@@ -264,13 +264,13 @@ class ToolRepository:
             UPDATE tools SET last_pid = NULL, last_pid_created_at = NULL, last_stopped_at = ?
             WHERE id = ?
             """,
-            (now_iso(), tool_id),
+            (now_iso_precise(), tool_id),
         )
 
     def mark_seen(self, tool_id: int) -> None:
         """ヘルスチェックが通った時刻を記録する。"""
         self._execute_update(
-            "UPDATE tools SET last_seen_at = ? WHERE id = ?", (now_iso(), tool_id)
+            "UPDATE tools SET last_seen_at = ? WHERE id = ?", (now_iso_precise(), tool_id)
         )
 
     # ------------------------------------------------------------------

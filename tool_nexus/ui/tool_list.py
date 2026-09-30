@@ -14,7 +14,7 @@ from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.core.settings import parse_interval
 from tool_nexus.process.health import Status, ToolHealth, derive_status, is_check_due, probe_all
 from tool_nexus.process.link_server import link_url
-from tool_nexus.ui.actions import start_group, start_tool, stop_group, stop_tool
+from tool_nexus.ui.actions import restart_tool, start_group, start_tool, stop_group, stop_tool
 from tool_nexus.ui.grouping import group_healths, sort_healths
 from tool_nexus.ui.state import (
     KIND_ALL,
@@ -68,8 +68,8 @@ def render_link_row(tool: Tool, health: ToolHealth) -> None:
     列の数と幅はツールの行と揃え、ボタンの位置がずれないようにする。
     """
     with st.container(key=f"tn-row-{tool.id}"):
-        main_col, port_col, _action_col, _log_col, edit_col = st.columns(
-            [6, 1.5, 0.9, 0.45, 0.45], vertical_alignment="center"
+        main_col, port_col, _action_col, _restart_col, _log_col, edit_col = st.columns(
+            [6, 1.5, 0.9, 0.45, 0.45, 0.45], vertical_alignment="center"
         )
         with main_col:
             render_tool_summary(
@@ -92,7 +92,7 @@ def render_tool_row(
 ) -> None:
     """1件を1行で描画する。
 
-    行あたりのウィジェットは 起動/停止・ログ・編集 の3つに抑える。
+    行あたりのウィジェットは 起動/停止・ログ・編集 の3つに抑える（起動中の行だけ再起動を足して4つ）。
     状態・名前・パスは1つのHTML、「開く」は素のアンカーで描く（0ウィジェット）。
     """
     tool = health.tool
@@ -100,8 +100,8 @@ def render_tool_row(
         render_link_row(tool, health)
         return
     with st.container(key=f"tn-row-{tool.id}"):
-        main_col, port_col, action_col, log_col, edit_col = st.columns(
-            [6, 1.5, 0.9, 0.45, 0.45], vertical_alignment="center"
+        main_col, port_col, action_col, restart_col, log_col, edit_col = st.columns(
+            [6, 1.5, 0.9, 0.45, 0.45, 0.45], vertical_alignment="center"
         )
         with main_col:
             notice = NOTICES.get(health.status, "")
@@ -135,6 +135,15 @@ def render_tool_row(
                     st.rerun(scope="fragment")
             elif st.button("起動", key=f"start_{tool.id}", type="primary", use_container_width=True):
                 start_tool(repository, settings, tool)
+                request_check()
+                st.rerun(scope="fragment")
+        with restart_col:
+            # 起動中の行だけ再起動を出す（この行だけウィジェットが4つになる。SPEC 8.1）
+            if health.can_stop and st.button(
+                ":material/restart_alt:", key=f"restart_{tool.id}", help="再起動（停止してから起動し直す）"
+            ):
+                with st.spinner("再起動しています…"):
+                    restart_tool(repository, settings, tool)
                 request_check()
                 st.rerun(scope="fragment")
         with log_col:

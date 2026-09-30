@@ -337,12 +337,13 @@ _CSS = f"""
     min-width: 0 !important;
 }}
 
-/* ツール行: 名前 / ポート・開く / 起動・停止 / ログ / 編集 */
+/* ツール行: 名前 / ポート・開く / 起動・停止 / 再起動 / ログ / 編集 */
 [class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(1) {{ flex: 1 1 0 !important; }}
 [class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(2) {{ flex: 0 0 7.5rem !important; }}
 [class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(3) {{ flex: 0 0 4.6rem !important; }}
 [class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(4),
-[class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(5) {{ flex: 0 0 2.3rem !important; }}
+[class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(5),
+[class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(6) {{ flex: 0 0 2.3rem !important; }}
 [class*="st-key-tn-row-"] [data-testid="stColumn"]:nth-child(n+3) .stButton > button {{
     width: 100%;
     padding: 0.25rem 0;

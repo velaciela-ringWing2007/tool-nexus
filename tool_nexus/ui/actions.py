@@ -1,7 +1,8 @@
-"""起動・停止・まとめて起動・グループの起動／停止（画面から呼ぶ操作）."""
+"""起動・停止・再起動・まとめて起動・グループの起動／停止（画面から呼ぶ操作）."""
 
 from __future__ import annotations
 
+import enum
 import time
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from tool_nexus.ui.state import flash, health_timeout, request_check
 
 # 停止後にポートの解放を確認する時間
 STOP_RELEASE_TIMEOUT = 5.0
+# 再起動でポートの解放を待つ時間（解放されないまま起動すると「ポートが使用中」になるため長めに待つ）
+RESTART_RELEASE_TIMEOUT = 10.0
 
 
 def log_path_for(tool: Tool, settings: dict[str, str]) -> Path:
@@ -34,7 +37,7 @@ def log_path_for(tool: Tool, settings: dict[str, str]) -> Path:
     )
 
 
-def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
+def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool, *, verb: str = "起動") -> None:
     if tool.port and not is_port_free(tool.port):
         flash(
             f"「{tool.name}」を起動できません。ポート {tool.port} は他のプロセスが使用中です。",
@@ -61,7 +64,7 @@ def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool)
             "warning",
         )
     else:
-        flash(f"「{tool.name}」を起動しました。")
+        flash(f"「{tool.name}」を{verb}しました。")
 
 
 def wait_port_released(port: int, timeout: float = STOP_RELEASE_TIMEOUT) -> bool:
@@ -110,6 +113,64 @@ def report_stopped(tool: Tool) -> None:
         )
     else:
         flash(f"「{tool.name}」を停止しました。")
+
+
+class RestartOutcome(enum.Enum):
+    """再起動の停止段階の結果（SPEC 6.3 再起動）."""
+
+    STOPPED = "stopped"                # 停止できた → 起動してよい
+    NOT_RUNNING = "not_running"        # 記録のプロセスは既に無く、ポートも空いている → そのまま起動してよい
+    NOT_IDENTIFIED = "not_identified"  # 動いているかもしれないが特定できない → 停止も起動もしない
+    STOP_FAILED = "stop_failed"        # 停止に失敗した → 起動しない
+    PORT_BUSY = "port_busy"            # 停止したがポートが解放されない → 起動しない
+
+
+def stop_for_restart(
+    tool: Tool,
+    *,
+    stopper=stop,
+    port_free=is_port_free,
+    wait_released=wait_port_released,
+) -> tuple[RestartOutcome, str]:
+    """再起動のために停止し、起動してよいかを返す（画面に依存しない。テスト用に差し替えられる）。"""
+    try:
+        stopper(tool.last_pid, tool.last_pid_created_at)
+    except ProcessNotIdentifiedError as exc:
+        gone = exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH)
+        if gone and (not tool.port or port_free(tool.port)):
+            return RestartOutcome.NOT_RUNNING, ""
+        return RestartOutcome.NOT_IDENTIFIED, ""
+    except StopError as exc:
+        return RestartOutcome.STOP_FAILED, str(exc)
+    if tool.port and not wait_released(tool.port, RESTART_RELEASE_TIMEOUT):
+        return RestartOutcome.PORT_BUSY, ""
+    return RestartOutcome.STOPPED, ""
+
+
+def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
+    """停止して起動し直す。特定できないものは止めない（SPEC 6.3 再起動）。"""
+    outcome, detail = stop_for_restart(tool)
+    if outcome is RestartOutcome.STOPPED:
+        repository.record_stop(int(tool.id))
+        start_tool(repository, settings, tool, verb="再起動")
+    elif outcome is RestartOutcome.NOT_RUNNING:
+        repository.clear_pid(int(tool.id))  # 記録していたプロセスはもう無い
+        start_tool(repository, settings, tool)
+    elif outcome is RestartOutcome.NOT_IDENTIFIED:
+        flash(
+            f"「{tool.name}」: 対象のプロセスを特定できないため、再起動しませんでした（停止もしていません）。"
+            "TOOL NEXUS の外で起動された可能性があります。「停止」からポートで探して止めてから起動してください。",
+            "error",
+        )
+    elif outcome is RestartOutcome.STOP_FAILED:
+        flash(f"「{tool.name}」を停止できなかったため、再起動しませんでした。{detail}", "error")
+    else:
+        repository.record_stop(int(tool.id))
+        flash(
+            f"「{tool.name}」を停止しましたが、ポート {tool.port} が解放されないため起動しませんでした。"
+            "少し待ってから「起動」を押してください。",
+            "warning",
+        )
 
 
 def current_health(repository: ToolRepository, settings: dict[str, str], tools: list[Tool]) -> list[ToolHealth]:

@@ -66,6 +66,15 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def now_iso_precise() -> str:
+    """マイクロ秒まで含むローカル時刻。起動・停止・ヘルス通過の記録に使う。
+
+    秒精度だと、再起動（停止の直後に起動）で停止と起動が同じ秒になり、
+    起動中…なのに「停止」と表示されてしまう（SPEC 6.4）。
+    """
+    return datetime.now().astimezone().isoformat(timespec="microseconds")
+
+
 def row_to_tool(row: sqlite3.Row) -> Tool:
     """SQLiteの行をモデルへ変換する。"""
     return Tool(

@@ -256,6 +256,17 @@ class TestStartRecord:
         assert loaded.last_pid_created_at is None
         assert loaded.last_started_at
 
+    def test_start_and_stop_records_keep_their_order_within_a_second(
+        self, repo: ToolRepository, workdir: Path
+    ) -> None:
+        from datetime import datetime
+
+        tool = repo.create(make_tool(workdir))
+        repo.record_stop(tool.id)
+        repo.record_start(tool.id, pid=1, created_at=STARTED)  # 再起動: 停止の直後に起動
+        loaded = repo.get_by_id(tool.id)
+        assert datetime.fromisoformat(loaded.last_started_at) > datetime.fromisoformat(loaded.last_stopped_at)
+
     def test_record_stop(self, repo: ToolRepository, workdir: Path) -> None:
         tool = repo.create(make_tool(workdir))
         repo.record_start(tool.id, pid=4321, created_at=STARTED)
