@@ -256,9 +256,14 @@ class ToolHealth:
 
     @property
     def can_stop(self) -> bool:
-        """停止ボタンを出すか。none モードなど判定できない場合は起動記録の有無で決める。"""
+        """停止を試みてよいか。none モードなど判定できない場合は、起動記録か停止コマンドがあれば止められる。"""
         if self.status in (Status.RUNNING, Status.STARTING):
             return True
         if self.status is Status.UNKNOWN:
-            return bool(self.tool.last_pid)
+            return bool(self.tool.last_pid or self.tool.stop_command)
         return False
+
+    @property
+    def offers_start_and_stop(self) -> bool:
+        """起動と停止を両方出すか（停止コマンドがあり、状態が分からないとき。SPEC 8.1）。"""
+        return self.status is Status.UNKNOWN and bool(self.tool.stop_command) and self.tool.kind != KIND_LINK

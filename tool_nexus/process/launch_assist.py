@@ -24,13 +24,16 @@ from tool_nexus.core.constants import (
     KIND_EXE,
     KIND_LINK,
     KIND_PYTHON,
+    KIND_SCRIPT,
     KIND_STREAMLIT,
     KIND_WEB,
     LINK_SUFFIXES,
     PORT_PLACEHOLDER,
+    SCRIPT_SUFFIXES,
 )
 from tool_nexus.core.models import default_health_mode
 from tool_nexus.process.base import ProcessQueryError
+from tool_nexus.process.control import split_command
 
 # プロジェクトのルートとみなす目印
 PROJECT_MARKERS: tuple[str, ...] = (
@@ -72,6 +75,7 @@ class Suggestion:
     health_mode: str
     notes: list[str] = field(default_factory=list)
     target: str = ""
+    stop_command: str = ""
 
 
 # ----------------------------------------------------------------------
@@ -225,6 +229,133 @@ def static_server_command(*, which: Callable[[str], str | None] = shutil.which) 
     return f"{python} -m http.server {PORT_PLACEHOLDER} --bind 127.0.0.1"
 
 
+# ----------------------------------------------------------------------
+# スクリプト（.ps1 / .sh）と停止コマンド（SPEC 6.9）
+# ----------------------------------------------------------------------
+SH_ON_WINDOWS_NOTE = (
+    "Windows では bash が Git Bash か WSL かで動きが変わります（PATH の順で WSL の bash が先に見つかることが多い）。"
+    "動かなければ、コマンドの bash を Git Bash の bash.exe のパスに書き換えてください。"
+)
+BACKGROUND_SCRIPT_NOTE = (
+    "バックグラウンドで docker などを動かして自分はすぐ終わるスクリプトは、子の状態を追えません。"
+    "死活監視を「HTTP」（ポートがある場合）か「監視しない」にして、停止コマンドを登録してください。"
+)
+
+
+def script_command(path: Path, base: Path | None) -> tuple[str, list[str]]:
+    """スクリプトを動かすコマンドと注記。パスは base（作業ディレクトリ）の中なら相対パス、それ以外は絶対パス。"""
+    shown = quote(relative_to_root(path, base) if base is not None else str(path))
+    if path.suffix.lower() == ".ps1":
+        return f"{osdep.POWERSHELL} -NoProfile -File {shown}", []
+    return f"bash {shown}", [SH_ON_WINDOWS_NOTE] if osdep.IS_WINDOWS else []
+
+
+def paired_stop_script(path: Path) -> Path | None:
+    """同じフォルダに、ファイル名の start を stop に変えたスクリプトがあれば返す（大文字小文字は問わない）。"""
+    stem = path.stem.lower()
+    if "start" not in stem:
+        return None
+    wanted = (stem.replace("start", "stop"), path.suffix.lower())
+    try:
+        entries = sorted(path.parent.iterdir())
+    except OSError:
+        return None
+    return next(
+        (entry for entry in entries if entry.is_file() and (entry.stem.lower(), entry.suffix.lower()) == wanted),
+        None,
+    )
+
+
+def suggest_script(path: Path) -> Suggestion:
+    """.ps1 / .sh はスクリプトとして登録する。作業ディレクトリはそのフォルダ、名前はフォルダ名。"""
+    directory = path.parent
+    command, notes = script_command(path, directory)
+    stop_command = ""
+    stop_script = paired_stop_script(path)
+    if stop_script is not None:
+        stop_command, _ = script_command(stop_script, directory)
+        notes.append(f"停止コマンドに {stop_script.name} を入れました。")
+    notes.append(BACKGROUND_SCRIPT_NOTE)
+    return Suggestion(
+        name=directory.name or path.stem,
+        directory=str(directory),
+        command=command,
+        kind=KIND_SCRIPT,
+        health_mode=default_health_mode(KIND_SCRIPT),
+        notes=notes,
+        stop_command=stop_command,
+    )
+
+
+def suggest_stop_command(
+    file: Path | str, directory: str, *, which: Callable[[str], str | None] = shutil.which
+) -> tuple[str, list[str]]:
+    """停止コマンドの欄で選んだファイルから、(停止コマンド, 注記) を返す。
+
+    パスは作業ディレクトリの中なら相対パス、外（作業ディレクトリが未入力を含む）なら絶対パスにする。
+    """
+    path = Path(file)
+    if not path.is_file():
+        raise AssistError(f"ファイルが見つかりません: {path}")
+    suffix = path.suffix.lower()
+    if suffix in (".bat", ".cmd"):
+        raise AssistError(".bat / .cmd は使えません（SPEC 6.9）。.ps1 / .sh にするか、コマンドを直接入力してください。")
+    base = Path(directory.strip().strip('"')) if directory.strip() else None
+    if suffix in SCRIPT_SUFFIXES:
+        return script_command(path, base)
+    if suffix == ".py":
+        root = find_project_root(path)
+        python, notes = python_launcher(path, root, which=which)
+        # python_launcher はルートからの相対パスを返す。停止コマンドは作業ディレクトリで動くので書き直す
+        tokens = [_rebase(token, root, base) for token in python] + [_rebase(str(path), root, base)]
+        return " ".join(quote(token) for token in tokens), notes
+    if osdep.is_executable_file(path):
+        return quote(str(path)), []
+    raise AssistError(f"選べるのは {osdep.EXECUTABLE_LABEL} だけです。")
+
+
+def _rebase(token: str, root: Path, base: Path | None) -> str:
+    """root からの相対パスのトークンを、base からの相対パス（base の外なら絶対パス）に書き直す。"""
+    path = Path(token) if Path(token).is_absolute() else root / token
+    if not path.exists():
+        return token  # uv / py などのコマンド名
+    return relative_to_root(path, base) if base is not None else str(path)
+
+
+# ----------------------------------------------------------------------
+# PowerShell の実行ポリシー（SPEC 6.1）
+# ----------------------------------------------------------------------
+POWERSHELL_NAMES: frozenset[str] = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
+BYPASS_OPTION = "-ExecutionPolicy Bypass"
+_BYPASS = re.compile(r"\s+-ExecutionPolicy\s+Bypass(?=\s|$)", re.IGNORECASE)
+_FIRST_TOKEN = re.compile(r"""^\s*(?:"[^"]*"|'[^']*'|\S+)""")
+
+
+def is_powershell_command(command: str) -> bool:
+    """powershell / pwsh で始まるコマンドか。"""
+    try:
+        argv = split_command(command or "")
+    except ValueError:
+        return False
+    return bool(argv) and re.split(r"[\\/]", argv[0])[-1].lower() in POWERSHELL_NAMES
+
+
+def has_bypass(command: str) -> bool:
+    return is_powershell_command(command) and bool(_BYPASS.search(command))
+
+
+def set_bypass(command: str, enabled: bool) -> str:
+    """-ExecutionPolicy Bypass を実行ファイルの直後に足す／取り除く。PowerShell 以外のコマンドは変えない。"""
+    if not is_powershell_command(command):
+        return command
+    cleaned = _BYPASS.sub("", command)
+    if not enabled:
+        return cleaned
+    match = _FIRST_TOKEN.match(cleaned)
+    assert match is not None  # is_powershell_command が True なら先頭のトークンがある
+    return f"{cleaned[:match.end()]} {BYPASS_OPTION}{cleaned[match.end():]}"
+
+
 def suggest_from_file(
     file: Path | str, *, which: Callable[[str], str | None] = shutil.which
 ) -> Suggestion:
@@ -237,6 +368,8 @@ def suggest_from_file(
         raise AssistError(".bat / .cmd は登録できません（SPEC 6.9）。")
     if suffix in LINK_SUFFIXES:
         return suggest_link(path)
+    if suffix in SCRIPT_SUFFIXES:
+        return suggest_script(path)
     if suffix != ".py" and not osdep.is_executable_file(path):
         raise AssistError(f"選べるのは {osdep.EXECUTABLE_LABEL} だけです。")
 

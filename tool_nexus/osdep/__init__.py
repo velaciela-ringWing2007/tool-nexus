@@ -21,6 +21,7 @@ LAUNCH_KWARGS: dict = _impl.LAUNCH_KWARGS
 POSIX_SPLIT: bool = _impl.POSIX_SPLIT
 DEFAULT_PYTHONS: tuple[str, ...] = _impl.DEFAULT_PYTHONS
 EXECUTABLE_LABEL: str = _impl.EXECUTABLE_LABEL
+POWERSHELL: str = _impl.POWERSHELL
 
 is_executable_file = _impl.is_executable_file
 track_child = _impl.track_child

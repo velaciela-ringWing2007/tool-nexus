@@ -44,9 +44,11 @@ POSIX_SPLIT = False
 
 # venv が無いときに使う Python（python はストアのエイリアスのことがあるため py を優先）
 DEFAULT_PYTHONS: tuple[str, ...] = ("py", "python")
+# .ps1 を動かす PowerShell（Windows PowerShell は必ず入っている。SPEC 6.9）
+POWERSHELL = "powershell"
 
 # ファイル選択で選べる実行ファイルの説明
-EXECUTABLE_LABEL = ".py / .exe / .html"
+EXECUTABLE_LABEL = ".py / .exe / .ps1 / .sh / .html"
 
 
 def is_executable_file(path: Path) -> bool:
@@ -239,8 +241,8 @@ def pick_file(initial_dir: str | None = None, *, runner: Runner = subprocess.run
     script = _DIALOG_PRELUDE + (
         "$d = New-Object System.Windows.Forms.OpenFileDialog; "
         "$d.Title = '起動するファイルを選択'; "
-        "$d.Filter = 'Python / 実行ファイル / HTML / PDF (*.py;*.exe;*.html;*.htm;*.pdf;*.svg)|"
-        "*.py;*.exe;*.html;*.htm;*.pdf;*.svg'; "
+        "$d.Filter = 'Python / 実行ファイル / スクリプト / HTML / PDF "
+        "(*.py;*.exe;*.ps1;*.sh;*.html;*.htm;*.pdf;*.svg)|*.py;*.exe;*.ps1;*.sh;*.html;*.htm;*.pdf;*.svg'; "
     )
     if initial_dir:
         script += f"$d.InitialDirectory = {_ps_literal(initial_dir)}; "

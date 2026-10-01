@@ -334,7 +334,7 @@ def test_migrates_database_without_last_stopped_at(tmp_path: Path, workdir: Path
     repo = ToolRepository(path)
     repo.initialize()
     [tool] = repo.list_all()
-    assert tool.name == "既存" and tool.last_stopped_at is None
+    assert tool.name == "既存" and tool.last_stopped_at is None and tool.stop_command == ""
     repo.record_stop(tool.id)
     assert repo.get_by_id(tool.id).last_stopped_at
 

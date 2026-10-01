@@ -22,7 +22,13 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from tool_nexus import osdep
-from tool_nexus.core.constants import DEFAULT_LOG_FILENAME, KIND_STREAMLIT, PORT_PLACEHOLDER
+from tool_nexus.core.constants import (
+    DEFAULT_LOG_FILENAME,
+    KIND_EXE,
+    KIND_STREAMLIT,
+    PORT_PLACEHOLDER,
+    STOP_COMMAND_TIMEOUT,
+)
 from tool_nexus.process.base import (
     CreationDateLookup,
     LaunchError,
@@ -34,7 +40,7 @@ from tool_nexus.process.base import (
     StopError,
     normalize_creation_date,
 )
-from tool_nexus.process.log_relay import LOG_OPTION, RELAY_SEPARATOR, parse_args, unwrap_command
+from tool_nexus.process.log_relay import LABEL_OPTION, LOG_OPTION, RELAY_SEPARATOR, parse_args, unwrap_command
 
 # process.base の例外・型も、呼び出し側はこのモジュールから import できる
 __all__ = [
@@ -44,7 +50,8 @@ __all__ = [
     "find_relayed", "get_creation_dates", "parse_relay_command",
     "get_process_creation_date", "guess_directory", "is_launcher_name", "launch",
     "normalize_creation_date", "prepare_launch", "read_log_tail", "resolve_executable",
-    "resolve_log_path", "root_process", "split_command", "stop", "take_snapshot", "verify_pid",
+    "resolve_log_path", "root_process", "run_stop_command", "split_command", "stop", "take_snapshot",
+    "verify_pid",
 ]
 
 # OS別の実装（呼び出し側はこの名前で使う）
@@ -247,9 +254,10 @@ def relay_python() -> str:
     return base if base and Path(base).is_file() else sys.executable
 
 
-def relay_argv(argv: list[str], log_path: Path) -> list[str]:
-    """中継プロセスの argv（`python log_relay.py --log <path> -- <ツールの argv>`）。"""
-    return [relay_python(), str(RELAY_SCRIPT), LOG_OPTION, str(log_path), RELAY_SEPARATOR, *argv]
+def relay_argv(argv: list[str], log_path: Path, *, label: str | None = None) -> list[str]:
+    """中継プロセスの argv（`python log_relay.py --log <path> [--label <見出し>] -- <ツールの argv>`）。"""
+    options = [LOG_OPTION, str(log_path)] + ([LABEL_OPTION, label] if label else [])
+    return [relay_python(), str(RELAY_SCRIPT), *options, RELAY_SEPARATOR, *argv]
 
 
 def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -313,6 +321,59 @@ def launch(
     except ProcessQueryError:
         created_at = None
     return LaunchResult(pid=proc.pid, created_at=created_at, argv=tuple(argv), log_path=log_path)
+
+
+# 停止コマンドのログの区切り行の見出し（SPEC 6.3・6.8）
+STOP_COMMAND_LABEL = "停止コマンド"
+
+
+def run_stop_command(
+    *,
+    command: str,
+    port: int | None,
+    directory: str | Path,
+    log_path: Path,
+    timeout: float = STOP_COMMAND_TIMEOUT,
+    popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    killer: Callable[[int], None] | None = None,
+) -> int:
+    """停止コマンドを作業ディレクトリで実行し、終わるまで待って終了コードを返す（SPEC 6.3）。
+
+    起動と同じく中継プロセスを通し、出力をツールのログに残す。実行できない・時間内に終わらない場合は
+    StopError を送出する（時間切れのときは停止コマンドを子ごと止める）。
+    """
+    try:
+        # 停止コマンドには --server.* を付けない（{port} の置き換えと相対パスの解決は起動と同じ）
+        argv, workdir = prepare_launch(command=command, kind=KIND_EXE, port=port, directory=directory)
+    except LaunchError as exc:
+        raise StopError(f"停止コマンドを実行できません。{exc}") from exc
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "ab")
+    except OSError as exc:
+        raise StopError(f"ログファイルを開けませんでした: {log_path}") from exc
+    try:
+        with log_file:
+            proc = popen(
+                relay_argv(argv, log_path, label=STOP_COMMAND_LABEL),
+                cwd=workdir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log_file,
+                env=child_env(),
+                **osdep.LAUNCH_KWARGS,
+            )
+    except OSError as exc:
+        raise StopError(f"停止コマンドを実行できませんでした: {exc}") from exc
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Popen を持っている間は PID が再利用されないため、照合せずに止めてよい
+        try:
+            (killer or osdep.kill_tree)(proc.pid)
+        except StopError:
+            pass
+        raise StopError(f"停止コマンドが {timeout:g} 秒で終わらなかったため、止めました。ログを確認してください。")
 
 
 def stop(
@@ -497,9 +558,10 @@ def parse_relay_command(command_line: str) -> tuple[str, list[str]] | None:
     for index, arg in enumerate(argv[:3]):
         if os.path.basename(arg) == RELAY_SCRIPT.name:
             try:
-                return parse_args(argv[index + 1:])
+                log_path, inner, _label = parse_args(argv[index + 1:])
             except SystemExit:
                 return None
+            return log_path, inner
     return None
 
 

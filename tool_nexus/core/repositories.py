@@ -17,7 +17,7 @@ from tool_nexus.core.models import Tool, now_iso, now_iso_precise, row_to_tool, 
 _SELECT_COLUMNS = """
     id, name, kind, directory, command, port, health_mode, log_path, autostart,
     description, sort_order, last_pid, last_pid_created_at, last_started_at,
-    last_stopped_at, last_seen_at, target, group_name, created_at, updated_at
+    last_stopped_at, last_seen_at, target, group_name, stop_command, created_at, updated_at
 """
 
 # 既定の並び順: 表示順 → 名前
@@ -35,6 +35,20 @@ class DuplicatePortError(ValueError):
 
 class ToolNotFoundError(LookupError):
     """指定IDのツールが存在しない場合に送出する例外."""
+
+
+# 登録・復元で使う INSERT（設定項目だけ。last_* は起動・停止の操作で更新する）
+_INSERT_SQL = """
+INSERT INTO tools (
+    name, kind, directory, command, port, health_mode, log_path,
+    autostart, description, sort_order, target, group_name, stop_command,
+    created_at, updated_at
+) VALUES (
+    :name, :kind, :directory, :command, :port, :health_mode, :log_path,
+    :autostart, :description, :sort_order, :target, :group_name, :stop_command,
+    :created_at, :updated_at
+)
+"""
 
 
 class ToolRepository:
@@ -105,18 +119,7 @@ class ToolRepository:
         try:
             with connect(self.db_path) as connection, transaction(connection):
                 self._ensure_port_free(connection, record.port, exclude_id=None)
-                cursor = connection.execute(
-                    """
-                    INSERT INTO tools (
-                        name, kind, directory, command, port, health_mode, log_path,
-                        autostart, description, sort_order, target, group_name, created_at, updated_at
-                    ) VALUES (
-                        :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                        :autostart, :description, :sort_order, :target, :group_name, :created_at, :updated_at
-                    )
-                    """,
-                    params,
-                )
+                cursor = connection.execute(_INSERT_SQL, params)
                 new_id = int(cursor.lastrowid)
         except sqlite3.Error as exc:
             raise DatabaseError("ツールの登録に失敗しました。") from exc
@@ -139,7 +142,7 @@ class ToolRepository:
                         command = :command, port = :port, health_mode = :health_mode,
                         log_path = :log_path, autostart = :autostart,
                         description = :description, sort_order = :sort_order, target = :target,
-                        group_name = :group_name,
+                        group_name = :group_name, stop_command = :stop_command,
                         updated_at = :updated_at
                     WHERE id = :id
                     """,
@@ -212,18 +215,7 @@ class ToolRepository:
                         raise DuplicatePortError(port, Tool(id=None, name=record["name"], directory="", command=""))
                     if port is not None:
                         seen_ports.add(port)
-                    connection.execute(
-                        """
-                        INSERT INTO tools (
-                            name, kind, directory, command, port, health_mode, log_path,
-                            autostart, description, sort_order, target, group_name, created_at, updated_at
-                        ) VALUES (
-                            :name, :kind, :directory, :command, :port, :health_mode, :log_path,
-                            :autostart, :description, :sort_order, :target, :group_name, :created_at, :updated_at
-                        )
-                        """,
-                        record,
-                    )
+                    connection.execute(_INSERT_SQL, record)
         except sqlite3.Error as exc:
             raise DatabaseError("ツールの復元に失敗しました。") from exc
         return len(records)

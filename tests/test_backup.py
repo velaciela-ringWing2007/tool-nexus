@@ -57,13 +57,14 @@ class TestExport:
             "name": "A", "kind": "streamlit", "directory": "/dev/x",
             "command": "python -m streamlit run app.py", "port": 8502, "healthMode": "http",
             "logPath": "", "autostart": True, "description": "説明", "sortOrder": 0, "target": "", "group": "",
+            "stopCommand": "",
         }
         text = export_bytes(repo).decode("utf-8")
         assert "123" not in text and "last" not in text.lower() and '"id"' not in text
 
     def test_round_trip(self, repo: ToolRepository, other: ToolRepository) -> None:
         add(repo, "A", 8502, sort_order=2)
-        add(repo, "B", None, kind=KIND_EXE, health_mode=HEALTH_PROCESS)
+        add(repo, "B", None, kind=KIND_EXE, health_mode=HEALTH_PROCESS, stop_command="docker compose down")
         repo.set_settings({"health_interval": "30s", "reserved_ports": "8501,8600"})
 
         parsed = parse_backup(export_bytes(repo))
@@ -94,7 +95,8 @@ class TestParse:
 
     def test_missing_directory_is_allowed(self) -> None:
         text = json.dumps({"tools": [{"name": "a", "directory": "/no/such/dir", "command": "c", "port": 8600}]})
-        assert len(parse_backup(text).tools) == 1
+        [tool] = parse_backup(text).tools
+        assert tool.stop_command == ""  # 停止コマンドを足す前のバックアップも読める（SPEC 7.3）
 
     def test_invalid_settings_are_reported_not_applied(self) -> None:
         parsed = parse_backup(json.dumps({"tools": [], "settings": {"health_interval": "abc"}}))

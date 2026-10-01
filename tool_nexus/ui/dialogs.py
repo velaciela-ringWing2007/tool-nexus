@@ -9,7 +9,9 @@ import streamlit as st
 from tool_nexus import osdep
 from tool_nexus.core.constants import (
     HEALTH_MODE_VALUES,
+    KIND_EXE,
     KIND_LINK,
+    KIND_SCRIPT,
     KIND_STREAMLIT,
     KIND_VALUES,
     KIND_WEB,
@@ -45,12 +47,18 @@ from tool_nexus.process.control import (
     take_snapshot,
 )
 from tool_nexus.process.launch_assist import (
+    BACKGROUND_SCRIPT_NOTE,
+    BYPASS_OPTION,
     AssistError,
+    has_bypass,
+    is_powershell_command,
     pick_file,
     pick_folder,
     quote,
+    set_bypass,
     static_server_command,
     suggest_from_file,
+    suggest_stop_command,
 )
 from tool_nexus.ui.actions import log_path_for, mark_stopped, report_stopped
 from tool_nexus.ui.state import close_dialog, flash, format_time, logger, open_dialog, request_check
@@ -64,6 +72,8 @@ def on_kind_change() -> None:
     kind = st.session_state["form_kind"]
     st.session_state["form_health_mode"] = default_health_mode(kind)
     st.session_state["form_notes"] = []  # 前の種別の案内は消す
+    if kind == KIND_SCRIPT:
+        st.session_state["form_notes"] = [("info", BACKGROUND_SCRIPT_NOTE)]
     if kind == KIND_WEB and not str(st.session_state.get("form_command", "")).strip():
         st.session_state["form_command"] = static_server_command()
         st.session_state["form_notes"] = [
@@ -96,10 +106,56 @@ def on_pick_file() -> None:
     st.session_state["form_target"] = suggestion.target
     st.session_state["form_kind"] = suggestion.kind
     st.session_state["form_health_mode"] = suggestion.health_mode
+    st.session_state["form_stop_command"] = suggestion.stop_command
     check = "内容" if suggestion.kind == KIND_LINK else "下の「実行されるコマンド」"
     st.session_state["form_notes"] = [("info", note) for note in suggestion.notes] + [
         ("info", f"推測した内容です。{check}を確認してから登録してください。")
     ]
+
+
+def on_pick_stop_file() -> None:
+    """停止コマンドに使うファイルを選ばせ、停止コマンドを入れる（SPEC 6.9）。"""
+    directory = str(st.session_state.get("form_directory") or "")
+    try:
+        path = pick_file(directory or None)
+        if path is None:
+            return
+        command, notes = suggest_stop_command(path, directory)
+    except AssistError as exc:
+        st.session_state["form_notes"] = [("error", str(exc))]
+        return
+    # 実行ポリシーのチェックが入っていれば、停止コマンドにも合わせる
+    if has_bypass(str(st.session_state.get("form_command") or "")):
+        command = set_bypass(command, True)
+    st.session_state["form_stop_command"] = command
+    st.session_state["form_notes"] = [("info", note) for note in notes] + [
+        ("info", "停止コマンドを入れました。下の「停止時に実行されるコマンド」を確認してから保存してください。")
+    ]
+
+
+def on_bypass_change() -> None:
+    """実行ポリシーのチェックに合わせて、起動コマンド・停止コマンドの -ExecutionPolicy Bypass を付け外しする。"""
+    enabled = bool(st.session_state["form_ps_bypass"])
+    for key in ("form_command", "form_stop_command"):
+        st.session_state[key] = set_bypass(str(st.session_state.get(key) or ""), enabled)
+
+
+def render_bypass_option() -> None:
+    """PowerShell のコマンドがあるときだけ、実行ポリシーのチェックを出す（SPEC 6.1）。
+
+    チェックの状態は保存しない。コマンドに -ExecutionPolicy Bypass があるかで決める（コマンドが正）。
+    """
+    commands = [str(st.session_state.get(key) or "") for key in ("form_command", "form_stop_command")]
+    if not any(is_powershell_command(command) for command in commands):
+        return
+    st.session_state["form_ps_bypass"] = any(has_bypass(command) for command in commands)
+    st.checkbox(
+        f"スクリプトの実行ポリシーを無視する（{BYPASS_OPTION}）",
+        key="form_ps_bypass",
+        on_change=on_bypass_change,
+        help="PCの実行ポリシーで .ps1 が止められる場合に使います。チェックすると起動コマンド・停止コマンドに "
+        f"{BYPASS_OPTION} を足します。会社のグループポリシーで決められている場合は効きません。",
+    )
 
 
 def on_pick_folder() -> None:
@@ -147,22 +203,23 @@ def render_link_fields() -> None:
 
 
 def render_command_preview(values: dict[str, Any]) -> None:
-    """実行されるコマンドを表示する（{port} の置き換えと --server.* の付与を反映）。"""
+    """実行されるコマンドを表示する（{port} の置き換えと --server.* の付与を反映）。停止コマンドも同様。"""
     command = str(values["command"] or "").strip()
-    if not command:
-        return
     port_text = str(values["port"] or "").strip()
-    auto = not port_text and can_auto_assign_port(values["kind"], command)
-    try:
-        argv = build_argv(
-            command, kind=values["kind"], port=port_text or ("<保存時に割当>" if auto else None)
-        )
-    except LaunchError as exc:
-        st.caption(f"実行されるコマンド: {exc}")
-        return
-    shown = " ".join(quote(arg) for arg in argv)
-    st.caption("実行されるコマンド（作業ディレクトリで実行）")
-    st.code(shown, language=None, wrap_lines=True)
+    auto = bool(command) and not port_text and can_auto_assign_port(values["kind"], command)
+    port = port_text or ("<保存時に割当>" if auto else None)
+    previews = [("実行されるコマンド", command, values["kind"])]
+    previews.append(("停止時に実行されるコマンド", str(values.get("stop_command") or "").strip(), KIND_EXE))
+    for title, text, kind in previews:
+        if not text:
+            continue
+        try:
+            argv = build_argv(text, kind=kind, port=port)
+        except LaunchError as exc:
+            st.caption(f"{title}: {exc}")
+            continue
+        st.caption(f"{title}（作業ディレクトリで実行）")
+        st.code(" ".join(quote(arg) for arg in argv), language=None, wrap_lines=True)
 
 
 def render_group_field(groups: list[str]) -> None:
@@ -246,6 +303,22 @@ def render_tool_form(groups: list[str]) -> dict[str, Any]:
         help="Streamlitの場合、--server.port / --server.address / --server.headless は自動で付与します。"
         "空白を含む値は --name \"a b\" のように別に書いてください。",
     )
+    stop_col, stop_button_col = st.columns([8, 1.2], vertical_alignment="bottom")
+    stop_col.text_input(
+        "停止コマンド",
+        key="form_stop_command",
+        placeholder="docker compose down　/　powershell -NoProfile -File stop.ps1",
+        help="登録すると「停止」でこれを作業ディレクトリで実行します（最大60秒待ちます）。"
+        "その後、TOOL NEXUS が起動したプロセスが残っていれば止めます。空欄なら今までどおりプロセスを止めます。",
+    )
+    stop_button_col.button(
+        ":material/folder_open:",
+        help="停止に使うファイル（.ps1 / .sh / 実行ファイル / .py）を選ぶ",
+        use_container_width=True,
+        on_click=on_pick_stop_file,
+        key="form_pick_stop_file",
+    )
+    render_bypass_option()
     left, right = st.columns(2)
     with left:
         st.text_input(
@@ -276,6 +349,7 @@ def render_tool_form(groups: list[str]) -> dict[str, Any]:
         "description": st.session_state["form_description"],
         "sort_order": st.session_state["form_sort_order"],
         "group_name": st.session_state["form_group"] or "",
+        "stop_command": st.session_state["form_stop_command"],
     }
     render_command_preview(values)
     return values

@@ -44,9 +44,13 @@ class TestPieces:
 
     def test_parse_args(self) -> None:
         assert log_relay.parse_args(["--log", "a.log", "--", "python", "x.py", "--", "y"]) == (
-            "a.log", ["python", "x.py", "--", "y"]
+            "a.log", ["python", "x.py", "--", "y"], "起動"
         )
-        for bad in (["--log", "a.log"], ["--", "python"], ["--log", "a.log", "--"]):
+        assert log_relay.parse_args(["--log", "a.log", "--label", "停止コマンド", "--", "stop.sh"]) == (
+            "a.log", ["stop.sh"], "停止コマンド"
+        )
+        for bad in (["--log", "a.log"], ["--", "python"], ["--log", "a.log", "--"],
+                    ["--log", "a.log", "--label", "--", "x"], ["--log", "a.log", "--name", "y", "--", "x"]):
             with pytest.raises(SystemExit):
                 log_relay.parse_args(bad)
 

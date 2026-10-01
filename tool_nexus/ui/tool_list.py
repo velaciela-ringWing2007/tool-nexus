@@ -117,31 +117,31 @@ def render_tool_row(
                     f"監視: {health_mode_label(tool.health_mode)}",
                     f"最終起動 {started}" if started else "",
                     "まとめて起動" if tool.autostart else "",
+                    "停止コマンドあり" if tool.stop_command else "",
                 ],
                 path=tool.directory,
                 notice=notice,
             )
         with port_col:
             render_port_link(tool.port, open_url(tool))
+        both = health.offers_start_and_stop
         with action_col:
-            if health.can_stop:
-                if st.button("停止", key=f"stop_{tool.id}", use_container_width=True):
-                    with st.spinner("停止しています…"):
-                        handled = stop_tool(repository, settings, tool)
-                    if not handled:
-                        # 記録から特定できない → ポートから引き直して確認を取る
-                        open_dialog("port_stop", tool)
+            if both or not health.can_stop:
+                if st.button("起動", key=f"start_{tool.id}", type="primary", use_container_width=True):
+                    start_tool(repository, settings, tool)
                     request_check()
                     st.rerun(scope="fragment")
-            elif st.button("起動", key=f"start_{tool.id}", type="primary", use_container_width=True):
-                start_tool(repository, settings, tool)
-                request_check()
-                st.rerun(scope="fragment")
+            elif st.button("停止", key=f"stop_{tool.id}", use_container_width=True):
+                run_stop(repository, settings, tool)
         with restart_col:
-            # 起動中の行だけ再起動を出す（この行だけウィジェットが4つになる。SPEC 8.1）
-            if health.can_stop and st.button(
+            if both:
+                # 停止コマンドがあり状態が分からない行は、起動と停止を両方出す（SPEC 8.1）
+                if st.button(":material/stop:", key=f"stop_{tool.id}", help="停止（停止コマンドを実行）"):
+                    run_stop(repository, settings, tool)
+            elif health.can_stop and st.button(
                 ":material/restart_alt:", key=f"restart_{tool.id}", help="再起動（停止してから起動し直す）"
             ):
+                # 起動中の行だけ再起動を出す（この行だけウィジェットが4つになる。SPEC 8.1）
                 with st.spinner("再起動しています…"):
                     restart_tool(repository, settings, tool)
                 request_check()
@@ -154,12 +154,22 @@ def render_tool_row(
                 open_dialog("edit", tool)
 
 
+def run_stop(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
+    """行の「停止」。記録から特定できず停止コマンドも無いときは、ポートから引き直して確認を取る。"""
+    with st.spinner("停止しています…"):
+        handled = stop_tool(repository, settings, tool)
+    if not handled:
+        open_dialog("port_stop", tool)
+    request_check()
+    st.rerun(scope="fragment")
+
+
 def matches_query(tool: Tool, query: str) -> bool:
     if not query:
         return True
     haystack = " ".join(
-        [tool.name, tool.group_name, tool.directory, tool.command, tool.target, tool.description,
-         str(tool.port or "")]
+        [tool.name, tool.group_name, tool.directory, tool.command, tool.stop_command, tool.target,
+         tool.description, str(tool.port or "")]
     ).lower()
     return all(word in haystack for word in query.lower().split())
 

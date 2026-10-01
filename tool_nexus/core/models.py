@@ -52,6 +52,7 @@ class Tool:
     sort_order: int = 0
     target: str = ""
     group_name: str = ""
+    stop_command: str = ""
     last_pid: int | None = None
     last_pid_created_at: str | None = None
     last_started_at: str | None = None
@@ -95,6 +96,7 @@ def row_to_tool(row: sqlite3.Row) -> Tool:
         last_stopped_at=row["last_stopped_at"],
         target=row["target"] or "",
         group_name=row["group_name"] or "",
+        stop_command=row["stop_command"] or "",
         last_seen_at=row["last_seen_at"],
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
@@ -119,6 +121,7 @@ def tool_to_params(tool: Tool) -> dict[str, Any]:
         "sort_order": tool.sort_order,
         "target": tool.target,
         "group_name": tool.group_name,
+        "stop_command": tool.stop_command,
     }
 
 
@@ -219,6 +222,20 @@ def normalize_command(raw: str | None) -> str:
     return command
 
 
+def normalize_stop_command(raw: str | None) -> str:
+    """停止コマンドは任意。入力があれば起動コマンドと同じく解釈できるかを確かめる（SPEC 6.3）。"""
+    command = (raw or "").strip()
+    if not command:
+        return ""
+    try:
+        argv = split_command(command)
+    except ValueError as exc:
+        raise ValidationError(f"停止コマンドを解釈できません: {exc}") from exc
+    if not argv or not argv[0]:
+        return ""
+    return command
+
+
 def normalize_port(raw: Any) -> int | None:
     """ポートを整数へ変換する。未入力は None（自動割当・exe用）。"""
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -258,6 +275,7 @@ def build_tool(
     sort_order: Any = 0,
     target: str | None = "",
     group_name: str | None = "",
+    stop_command: str | None = "",
     check_directory: bool = True,
 ) -> Tool:
     """入力値を検証・正規化して Tool を組み立てる。
@@ -310,4 +328,5 @@ def build_tool(
         description=(description or "").strip(),
         sort_order=normalize_sort_order(sort_order),
         group_name=normalize_group(group_name),
+        stop_command=normalize_stop_command(stop_command),
     )

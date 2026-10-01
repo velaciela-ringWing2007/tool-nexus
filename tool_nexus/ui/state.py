@@ -48,6 +48,8 @@ FORM_KEYS: dict[str, Any] = {
     "form_sort_order": 0,
     "form_target": "",
     "form_group": "",
+    "form_stop_command": "",
+    "form_ps_bypass": False,
 }
 
 # 画面
@@ -151,6 +153,7 @@ def prime_form(tool: Tool | None = None, overrides: dict[str, Any] | None = None
                 "form_sort_order": tool.sort_order,
                 "form_target": tool.target,
                 "form_group": tool.group_name,
+                "form_stop_command": tool.stop_command,
             }
         )
     values.update(overrides or {})

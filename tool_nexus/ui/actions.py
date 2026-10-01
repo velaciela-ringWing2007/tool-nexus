@@ -25,6 +25,7 @@ from tool_nexus.process.control import (
     launch,
     prepare_launch,
     resolve_log_path,
+    run_stop_command,
     stop,
 )
 from tool_nexus.process.health import ToolHealth, derive_status, expects_running, probe_all
@@ -152,6 +153,34 @@ def rediscover_alive(
     return adopted
 
 
+# ----------------------------------------------------------------------
+# 停止コマンド（SPEC 6.3）
+# ----------------------------------------------------------------------
+def run_tool_stop_command(tool: Tool, settings: dict[str, str]) -> None:
+    """ツールの停止コマンドを実行する。終了コード0以外・実行できない・時間切れは StopError。"""
+    code = run_stop_command(
+        command=tool.stop_command, port=tool.port, directory=tool.directory, log_path=log_path_for(tool, settings)
+    )
+    if code != 0:
+        raise StopError(f"停止コマンドが終了コード {code} で終わりました。ログを確認してください。")
+
+
+def stop_by_command(
+    tool: Tool,
+    settings: dict[str, str],
+    *,
+    command_runner: Callable[[Tool, dict[str, str]], None] = run_tool_stop_command,
+    stopper=stop,
+    rediscover: Callable[[], ProcessInfo | None] | None = None,
+) -> None:
+    """停止コマンドを実行し、TOOL NEXUS が起動したプロセスが残っていれば照合してから止める。失敗は StopError。"""
+    command_runner(tool, settings)
+    try:
+        stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscover or rediscoverer(tool, settings))
+    except ProcessNotIdentifiedError:
+        pass  # 残っていない（停止コマンドで止まった、またはすぐ終わるスクリプト）
+
+
 def mark_stopped(repository: ToolRepository, settings: dict[str, str], tool: Tool, reason: str = "停止") -> None:
     """停止を記録し、ログに停止の区切り行を書く（中継プロセスごと止まるため TOOL NEXUS が書く。SPEC 6.8）。"""
     repository.record_stop(int(tool.id))
@@ -204,10 +233,19 @@ def wait_port_released(port: int, timeout: float = STOP_RELEASE_TIMEOUT) -> bool
 
 
 def stop_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> bool:
-    """記録済みのPIDで停止する。
+    """記録済みのPIDで停止する。停止コマンドがあればそれを使う（SPEC 6.3）。
 
     照合が取れず、ポートから引き直せる場合は False を返す（呼び出し側で確認ダイアログを開く）。
     """
+    if tool.stop_command:
+        try:
+            stop_by_command(tool, settings)
+        except StopError as exc:
+            flash(f"「{tool.name}」を停止できませんでした。{exc}", "error")
+            return True
+        mark_stopped(repository, settings, tool)
+        report_stopped(tool)
+        return True
     try:
         stop_with_rediscovery(tool, rediscover=rediscoverer(tool, settings))
     except ProcessNotIdentifiedError as exc:
@@ -257,15 +295,20 @@ def stop_for_restart(
     *,
     stopper=stop,
     rediscover: Callable[[], ProcessInfo | None] = lambda: None,
+    command_stopper: Callable[[], None] | None = None,
     port_free=is_port_free,
     wait_released=wait_port_released,
 ) -> tuple[RestartOutcome, str]:
     """再起動のために停止し、起動してよいかを返す（画面に依存しない。テスト用に差し替えられる）。
 
     記録の PID で特定できなければ、TOOL NEXUS が起動したプロセスを探し直して停止する（SPEC 6.3）。
+    停止コマンドがあるツールは command_stopper（停止コマンド → 残ったプロセスの停止）で止める。
     """
     try:
-        stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscover)
+        if command_stopper is not None:
+            command_stopper()
+        else:
+            stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscover)
     except ProcessNotIdentifiedError as exc:
         gone = exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH)
         if gone and (not tool.port or port_free(tool.port)):
@@ -280,7 +323,10 @@ def stop_for_restart(
 
 def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
     """停止して起動し直す。特定できないものは止めない（SPEC 6.3 再起動）。"""
-    outcome, detail = stop_for_restart(tool, rediscover=rediscoverer(tool, settings))
+    command_stopper = (lambda: stop_by_command(tool, settings)) if tool.stop_command else None
+    outcome, detail = stop_for_restart(
+        tool, rediscover=rediscoverer(tool, settings), command_stopper=command_stopper
+    )
     if outcome is RestartOutcome.STOPPED:
         mark_stopped(repository, settings, tool, "停止（再起動）")
         start_tool(repository, settings, tool, verb="再起動")
@@ -354,6 +400,7 @@ def stop_tools(
     *,
     stopper=stop,
     finder: RelayFinder = find_relay_processes,
+    command_runner: Callable[[Tool, dict[str, str]], None] = run_tool_stop_command,
 ) -> StopSummary:
     """起動中のものを停止する。特定できないものは止めずに summary.not_identified に入れる。
 
@@ -364,8 +411,12 @@ def stop_tools(
         tool = health.tool
         if not should_stop(health):
             continue
+        rediscover = rediscoverer(tool, settings, finder=finder)
         try:
-            stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscoverer(tool, settings, finder=finder))
+            if tool.stop_command:
+                stop_by_command(tool, settings, command_runner=command_runner, stopper=stopper, rediscover=rediscover)
+            else:
+                stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscover)
         except ProcessNotIdentifiedError as exc:
             if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
                 repository.clear_pid(int(tool.id))

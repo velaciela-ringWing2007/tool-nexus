@@ -2,10 +2,11 @@
 
 TOOL NEXUS はツールを直接ではなく、このスクリプトの子として起動する。
 
-    python log_relay.py --log <ログファイル> -- <ツールの argv...>
+    python log_relay.py --log <ログファイル> [--label <見出し>] -- <ツールの argv...>
 
 * ツールの標準出力・標準エラー出力を1行ずつ受け取り、`2026-10-01 10:15:03.412 | ` を付けて追記する
-* 起動の区切り行（日時・PID・コマンド）と、ツールが自分で終わったときの終了の区切り行を書く
+* 起動の区切り行（日時・PID・コマンド）と、ツールが自分で終わったときの終了の区切り行を書く。
+  区切り行の見出しは既定で「起動」。停止コマンドを実行するときは `--label 停止コマンド` を渡す
 * 終了コードはツールのものをそのまま返す
 
 単独のスクリプトとして動かすため、標準ライブラリだけを使い、TOOL NEXUS の他のモジュールは import しない。
@@ -22,6 +23,9 @@ from typing import BinaryIO, Iterable
 
 RELAY_SEPARATOR = "--"
 LOG_OPTION = "--log"
+LABEL_OPTION = "--label"
+DEFAULT_LABEL = "起動"
+_USAGE = "usage: log_relay.py --log <file> [--label <text>] -- <command...>"
 
 # 行頭に既に日時があるか（Streamlit などは自分で時刻を付けて出力する。二重に付けない）
 _HAS_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
@@ -46,8 +50,8 @@ def format_command(argv: Iterable[str]) -> str:
     return " ".join(f'"{arg}"' if any(ch.isspace() for ch in arg) else arg for arg in argv)
 
 
-def start_marker(pid: int, argv: list[str]) -> str:
-    return f"===== {now_label(millis=False)} 起動 (PID {pid}) =====\n  {format_command(argv)}\n"
+def start_marker(pid: int, argv: list[str], label: str = DEFAULT_LABEL) -> str:
+    return f"===== {now_label(millis=False)} {label} (PID {pid}) =====\n  {format_command(argv)}\n"
 
 
 def exit_marker(code: int) -> str:
@@ -73,15 +77,17 @@ def relay(stream: BinaryIO, log: BinaryIO) -> None:
         log.flush()
 
 
-def parse_args(args: list[str]) -> tuple[str, list[str]]:
-    """`--log <path> -- <argv...>` を (ログファイル, ツールの argv) に分ける。"""
+def parse_args(args: list[str]) -> tuple[str, list[str], str]:
+    """`--log <path> [--label <text>] -- <argv...>` を (ログファイル, ツールの argv, 見出し) に分ける。"""
     if RELAY_SEPARATOR not in args:
-        raise SystemExit("usage: log_relay.py --log <file> -- <command...>")
+        raise SystemExit(_USAGE)
     split = args.index(RELAY_SEPARATOR)
     head, argv = args[:split], args[split + 1:]
-    if len(head) != 2 or head[0] != LOG_OPTION or not argv:
-        raise SystemExit("usage: log_relay.py --log <file> -- <command...>")
-    return head[1], argv
+    if len(head) not in (2, 4) or head[0] != LOG_OPTION or not argv:
+        raise SystemExit(_USAGE)
+    if len(head) == 4 and (head[2] != LABEL_OPTION or not head[3]):
+        raise SystemExit(_USAGE)
+    return head[1], argv, head[3] if len(head) == 4 else DEFAULT_LABEL
 
 
 def unwrap_command(argv: list[str]) -> list[str] | None:
@@ -95,16 +101,16 @@ def unwrap_command(argv: list[str]) -> list[str] | None:
 
 
 def main(args: list[str] | None = None) -> int:
-    log_path, argv = parse_args(list(sys.argv[1:] if args is None else args))
+    log_path, argv, label = parse_args(list(sys.argv[1:] if args is None else args))
     with open(log_path, "ab") as log:
         try:
             child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except OSError as exc:
-            log.write(start_marker(os.getpid(), argv).encode("utf-8"))
+            log.write(start_marker(os.getpid(), argv, label).encode("utf-8"))
             log.write(f"{now_label(millis=True)} | 起動できませんでした: {exc}\n".encode("utf-8"))
             log.write(exit_marker(127).encode("utf-8"))
             return 127
-        log.write(start_marker(os.getpid(), argv).encode("utf-8"))
+        log.write(start_marker(os.getpid(), argv, label).encode("utf-8"))
         log.flush()
         relay(child.stdout, log)
         code = child.wait()

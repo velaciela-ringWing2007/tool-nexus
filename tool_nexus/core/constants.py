@@ -19,6 +19,8 @@ KIND_STREAMLIT: Final[str] = "streamlit"
 KIND_WEB: Final[str] = "web"
 KIND_PYTHON: Final[str] = "python"
 KIND_EXE: Final[str] = "exe"
+# PowerShell（.ps1）・シェル（.sh）のスクリプト（SPEC 6.1）
+KIND_SCRIPT: Final[str] = "script"
 # 起動も停止もせず開くだけ（URL・ローカルのファイル／フォルダ。SPEC 6.10）
 KIND_LINK: Final[str] = "link"
 KIND_LABELS: Final[dict[str, str]] = {
@@ -26,6 +28,7 @@ KIND_LABELS: Final[dict[str, str]] = {
     KIND_WEB: "Web",
     KIND_PYTHON: "Python",
     KIND_EXE: "EXE",
+    KIND_SCRIPT: "スクリプト",
     KIND_LINK: "リンク",
 }
 KIND_VALUES: Final[tuple[str, ...]] = tuple(KIND_LABELS)
@@ -48,6 +51,7 @@ DEFAULT_HEALTH_MODE_BY_KIND: Final[dict[str, str]] = {
     KIND_WEB: HEALTH_HTTP,
     KIND_PYTHON: HEALTH_PROCESS,
     KIND_EXE: HEALTH_PROCESS,
+    KIND_SCRIPT: HEALTH_PROCESS,
     KIND_LINK: HEALTH_NONE,
 }
 
@@ -72,6 +76,12 @@ TOOL_NEXUS_PORT: Final[int] = 8499
 # リンク（ローカルのファイル）を配信する TOOL NEXUS 内のHTTPサーバーのポート（SPEC 6.10）。
 # TOOL NEXUS 自身のポートと同じく、自動割当の候補から常に除外する。
 LINK_SERVER_PORT: Final[int] = 8498
+
+# 「ファイルから入力」でスクリプトとして登録する拡張子（SPEC 6.9）
+SCRIPT_SUFFIXES: Final[frozenset[str]] = frozenset({".ps1", ".sh"})
+
+# 停止コマンドが終わるのを待つ秒数（SPEC 6.3）
+STOP_COMMAND_TIMEOUT: Final[float] = 60.0
 
 # 「ファイルから入力」でリンクとして登録する拡張子
 LINK_SUFFIXES: Final[frozenset[str]] = frozenset({".html", ".htm", ".pdf", ".svg"})
