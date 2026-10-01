@@ -16,6 +16,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -33,6 +34,7 @@ from tool_nexus.process.base import (
     StopError,
     normalize_creation_date,
 )
+from tool_nexus.process.log_relay import LOG_OPTION, RELAY_SEPARATOR, unwrap_command
 
 # process.base の例外・型も、呼び出し側はこのモジュールから import できる
 __all__ = [
@@ -225,6 +227,46 @@ def prepare_launch(
     return argv, workdir
 
 
+# ツールの出力に時刻を付けてログへ書く中継プロセス（SPEC 6.8）
+RELAY_SCRIPT = Path(__file__).with_name("log_relay.py")
+
+# 起動するツールに渡す環境変数（ユーザーが設定していればそちらを優先する。SPEC 6.2）
+CHILD_ENV_DEFAULTS: dict[str, str] = {
+    # 出力先がファイルだと Python は出力を溜めるため、print がツールの終了までログに出てこない
+    "PYTHONUNBUFFERED": "1",
+    # 出力先がファイルだと Windows の Python は cp932 で書き、絵文字などでツールが落ちる
+    "PYTHONIOENCODING": "utf-8",
+}
+
+
+def relay_python() -> str:
+    """中継プロセスを動かす Python。venv のリダイレクタを挟まないよう、元の Python を使う。"""
+    base = getattr(sys, "_base_executable", None)
+    return base if base and Path(base).is_file() else sys.executable
+
+
+def relay_argv(argv: list[str], log_path: Path) -> list[str]:
+    """中継プロセスの argv（`python log_relay.py --log <path> -- <ツールの argv>`）。"""
+    return [relay_python(), str(RELAY_SCRIPT), LOG_OPTION, str(log_path), RELAY_SEPARATOR, *argv]
+
+
+def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    for key, value in CHILD_ENV_DEFAULTS.items():
+        env.setdefault(key, value)
+    return env
+
+
+def append_log_marker(log_path: Path, text: str) -> None:
+    """ログに区切り行を追記する（停止など、中継プロセスが書けないもの）。失敗しても操作は止めない。"""
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
+            log.write(text.encode("utf-8"))
+    except OSError:
+        pass
+
+
 def launch(
     *,
     command: str,
@@ -235,9 +277,11 @@ def launch(
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
     lookup: CreationDateLookup = get_process_creation_date,
 ) -> LaunchResult:
-    """ツールをデタッチ起動する。
+    """ツールを、ログの中継プロセスの子としてデタッチ起動する（SPEC 6.2・6.8）。
 
-    標準出力はログファイルへ流す（PIPE にすると誰も読まずに詰まり、子プロセスが止まる）。
+    Popen で起動するのは中継プロセスで、返す PID も中継プロセスのもの。中継プロセスは
+    ツールが終わるまで生きているので、照合・停止・死活監視はそのまま働く。
+    中継プロセス自身の例外もログに残るよう、中継プロセスの標準エラー出力はログファイルにつなぐ。
     """
     argv, workdir = prepare_launch(command=command, kind=kind, port=port, directory=directory)
     try:
@@ -249,11 +293,12 @@ def launch(
     try:
         with log_file:
             proc = popen(
-                argv,
+                relay_argv(argv, log_path),
                 cwd=workdir,
                 stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=log_file,
+                env=child_env(),
                 **osdep.LAUNCH_KWARGS,
             )
     except OSError as exc:
@@ -312,10 +357,11 @@ class DetectedTool:
     """検出された未登録のツール（登録フォームの初期値に使う）."""
 
     port: int
-    process: ProcessInfo  # 停止・登録の対象（最上位の起動役）
+    process: ProcessInfo  # 停止の対象（最上位の起動役）
     listener_pid: int     # 実際にポートを持っているPID
     directory: str
     name: str
+    command: str          # 登録に使うコマンド（中継プロセスの中のツールのコマンド）
 
 
 def _args(command_line: str) -> list[str]:
@@ -422,6 +468,21 @@ def guess_directory(command_line: str) -> str:
     return ""
 
 
+def tool_command(command_line: str) -> str:
+    """プロセスのコマンドラインから、登録に使うツールのコマンドを返す。
+
+    TOOL NEXUS が起動したツールは中継プロセスの子なので、中継プロセスなら中のツールのコマンドを取り出す。
+    """
+    try:
+        argv = split_command(command_line)
+    except ValueError:
+        return command_line
+    inner = unwrap_command(argv)
+    if inner is None:
+        return command_line
+    return " ".join(f'"{arg}"' if any(ch.isspace() for ch in arg) else arg for arg in inner)
+
+
 def detect_streamlit(
     snapshot: Snapshot, *, exclude_ports: Iterable[int], own_pid: int | None = None
 ) -> list[DetectedTool]:
@@ -443,7 +504,8 @@ def detect_streamlit(
             if "streamlit" not in process.command_line.lower():
                 continue
             owner = root_process(snapshot, pid, stop_at=protected) or process
-            directory = guess_directory(owner.command_line)
+            command = tool_command(owner.command_line)
+            directory = guess_directory(command)
             found.append(
                 DetectedTool(
                     port=port,
@@ -451,6 +513,7 @@ def detect_streamlit(
                     listener_pid=pid,
                     directory=directory,
                     name=Path(directory).name if directory else f"Streamlit {port}",
+                    command=command,
                 )
             )
             break

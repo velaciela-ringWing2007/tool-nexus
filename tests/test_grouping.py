@@ -114,6 +114,7 @@ class TestStopTools:
     """グループの停止: 特定できないものは止めずに知らせる（SPEC 6.11）."""
 
     def test_split_results(self, tmp_path) -> None:
+        from tool_nexus.core.constants import DEFAULT_SETTINGS
         from tool_nexus.core.models import build_tool
         from tool_nexus.core.repositories import ToolRepository
         from tool_nexus.process.base import PidStatus, ProcessNotIdentifiedError, StopError
@@ -138,7 +139,8 @@ class TestStopTools:
 
         healths = [ToolHealth(created[n], True, Status.RUNNING) for n in ["ok", "外部", "再利用", "失敗"]]
         healths.append(ToolHealth(created["停止中"], False, Status.STOPPED))
-        summary = stop_tools(repo, healths, stopper=stopper)
+        settings = DEFAULT_SETTINGS | {"default_log_dir": str(tmp_path / "logs")}
+        summary = stop_tools(repo, settings, healths, stopper=stopper)
 
         assert summary.stopped == ["ok"]
         assert summary.not_identified == ["外部", "再利用"]
@@ -147,3 +149,7 @@ class TestStopTools:
         assert repo.get_by_id(created["再利用"].id).last_pid is None   # 古い記録は消す
         assert repo.get_by_id(created["外部"].id).last_pid == 101      # 分からないものは触らない
         assert repo.get_by_id(created["停止中"].id).last_stopped_at is None  # 停止中は対象外
+        # 停止したものだけ、ログに停止の区切り行を書く（SPEC 6.8）
+        stopped_log = (tmp_path / "logs" / f"tool-{created['ok'].id}.log").read_text(encoding="utf-8")
+        assert "停止 =====" in stopped_log
+        assert not (tmp_path / "logs" / f"tool-{created['外部'].id}.log").exists()

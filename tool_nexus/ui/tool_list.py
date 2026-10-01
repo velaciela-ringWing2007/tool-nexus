@@ -127,7 +127,7 @@ def render_tool_row(
             if health.can_stop:
                 if st.button("停止", key=f"stop_{tool.id}", use_container_width=True):
                     with st.spinner("停止しています…"):
-                        handled = stop_tool(repository, tool)
+                        handled = stop_tool(repository, settings, tool)
                     if not handled:
                         # 記録から特定できない → ポートから引き直して確認を取る
                         open_dialog("port_stop", tool)

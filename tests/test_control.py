@@ -427,11 +427,18 @@ class TestLaunch:
         assert log_path.exists()
 
         argv, kwargs = popen.calls[0]
+        # ツールはログの中継プロセスの子として起動する（SPEC 6.8）
+        assert argv[1].endswith("log_relay.py")
+        assert argv[2:5] == ["--log", str(log_path), "--"]
+        assert argv[5:] == list(result.argv)
         assert "--server.port" in argv
         assert kwargs["cwd"] == tmp_path
-        assert kwargs["stdout"] is not subprocess.PIPE
-        assert kwargs["stderr"] is subprocess.STDOUT
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] not in (subprocess.PIPE, subprocess.STDOUT)  # 中継プロセス自身のエラーはログへ
         assert kwargs.get("shell") in (None, False)
+        # Python の出力を溜めない・UTF-8 で書く（SPEC 6.2）
+        assert kwargs["env"]["PYTHONUNBUFFERED"] == "1"
+        assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
         # OSごとの切り離し方（Windows: CREATE_NO_WINDOW、Linux: start_new_session）を渡している
         for key, value in osdep.LAUNCH_KWARGS.items():
             assert kwargs[key] == value

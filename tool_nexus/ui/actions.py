@@ -14,11 +14,13 @@ from tool_nexus.process.control import (
     PidStatus,
     ProcessNotIdentifiedError,
     StopError,
+    append_log_marker,
     launch,
     resolve_log_path,
     stop,
 )
 from tool_nexus.process.health import ToolHealth, derive_status, probe_all
+from tool_nexus.process.log_relay import stop_marker
 from tool_nexus.ui.grouping import StopSummary, should_start, should_stop
 from tool_nexus.ui.state import flash, health_timeout, request_check
 
@@ -35,6 +37,12 @@ def log_path_for(tool: Tool, settings: dict[str, str]) -> Path:
         default_log_dir=settings.get("default_log_dir", ""),
         tool_id=tool.id,
     )
+
+
+def mark_stopped(repository: ToolRepository, settings: dict[str, str], tool: Tool, reason: str = "停止") -> None:
+    """停止を記録し、ログに停止の区切り行を書く（中継プロセスごと止まるため TOOL NEXUS が書く。SPEC 6.8）。"""
+    repository.record_stop(int(tool.id))
+    append_log_marker(log_path_for(tool, settings), stop_marker(reason))
 
 
 def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool, *, verb: str = "起動") -> None:
@@ -76,7 +84,7 @@ def wait_port_released(port: int, timeout: float = STOP_RELEASE_TIMEOUT) -> bool
     return is_port_free(port)
 
 
-def stop_tool(repository: ToolRepository, tool: Tool) -> bool:
+def stop_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> bool:
     """記録済みのPIDで停止する。
 
     照合が取れず、ポートから引き直せる場合は False を返す（呼び出し側で確認ダイアログを開く）。
@@ -100,7 +108,7 @@ def stop_tool(repository: ToolRepository, tool: Tool) -> bool:
         flash(f"「{tool.name}」を停止できませんでした。{exc}", "error")
         return True
 
-    repository.record_stop(int(tool.id))
+    mark_stopped(repository, settings, tool)
     report_stopped(tool)
     return True
 
@@ -151,7 +159,7 @@ def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Too
     """停止して起動し直す。特定できないものは止めない（SPEC 6.3 再起動）。"""
     outcome, detail = stop_for_restart(tool)
     if outcome is RestartOutcome.STOPPED:
-        repository.record_stop(int(tool.id))
+        mark_stopped(repository, settings, tool, "停止（再起動）")
         start_tool(repository, settings, tool, verb="再起動")
     elif outcome is RestartOutcome.NOT_RUNNING:
         repository.clear_pid(int(tool.id))  # 記録していたプロセスはもう無い
@@ -165,7 +173,7 @@ def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Too
     elif outcome is RestartOutcome.STOP_FAILED:
         flash(f"「{tool.name}」を停止できなかったため、再起動しませんでした。{detail}", "error")
     else:
-        repository.record_stop(int(tool.id))
+        mark_stopped(repository, settings, tool, "停止（再起動）")
         flash(
             f"「{tool.name}」を停止しましたが、ポート {tool.port} が解放されないため起動しませんでした。"
             "少し待ってから「起動」を押してください。",
@@ -214,7 +222,9 @@ def start_group(repository: ToolRepository, settings: dict[str, str], group: str
     request_check()
 
 
-def stop_tools(repository: ToolRepository, healths: list[ToolHealth], *, stopper=stop) -> StopSummary:
+def stop_tools(
+    repository: ToolRepository, settings: dict[str, str], healths: list[ToolHealth], *, stopper=stop
+) -> StopSummary:
     """起動中のものを停止する。特定できないものは止めずに summary.not_identified に入れる。
 
     1件ずつ確認ダイアログは出さない（グループの停止で煩わしくなるため。SPEC 6.11）。
@@ -234,7 +244,7 @@ def stop_tools(repository: ToolRepository, healths: list[ToolHealth], *, stopper
         except StopError as exc:
             summary.failed.append(f"{tool.name}: {exc}")
             continue
-        repository.record_stop(int(tool.id))
+        mark_stopped(repository, settings, tool)
         summary.stopped.append(tool.name)
     return summary
 
@@ -242,7 +252,7 @@ def stop_tools(repository: ToolRepository, healths: list[ToolHealth], *, stopper
 def stop_group(repository: ToolRepository, settings: dict[str, str], group: str) -> None:
     """グループ内の起動中のツールを停止する（SPEC 6.11）。"""
     tools = group_members(repository, group)
-    summary = stop_tools(repository, current_health(repository, settings, tools))
+    summary = stop_tools(repository, settings, current_health(repository, settings, tools))
     if summary.stopped:
         flash(f"「{group}」: {len(summary.stopped)} 件を停止しました（{'、'.join(summary.stopped)}）。")
     elif not summary.not_identified and not summary.failed:

@@ -52,7 +52,7 @@ from tool_nexus.process.launch_assist import (
     static_server_command,
     suggest_from_file,
 )
-from tool_nexus.ui.actions import log_path_for, report_stopped
+from tool_nexus.ui.actions import log_path_for, mark_stopped, report_stopped
 from tool_nexus.ui.state import close_dialog, flash, format_time, logger, open_dialog, request_check
 
 
@@ -429,7 +429,7 @@ def render_process_card(process: ProcessInfo, port: int) -> None:
 
 
 @st.dialog("ポートから特定して停止", width="large", on_dismiss=close_dialog)
-def port_stop_dialog(repository: ToolRepository) -> None:
+def port_stop_dialog(repository: ToolRepository, settings: dict[str, str]) -> None:
     """記録から特定できないツールを、ポートでLISTENしているプロセスから引き直して停止する。
 
     強制終了なので、対象を画面に出してユーザーの確認を取ってから停止する（SPEC 6.3）。
@@ -471,7 +471,7 @@ def port_stop_dialog(repository: ToolRepository) -> None:
         except StopError as exc:
             flash(f"「{target.name}」を停止できませんでした。{exc}", "error")
         else:
-            repository.record_stop(int(target.id))
+            mark_stopped(repository, settings, target)
             report_stopped(target)
         close_dialog()
         request_check()
@@ -488,7 +488,7 @@ def register_detected(detected: DetectedTool) -> None:
             "form_name": detected.name,
             "form_kind": KIND_STREAMLIT,
             "form_directory": detected.directory,
-            "form_command": detected.process.command_line,
+            "form_command": detected.command,
             "form_port": str(detected.port),
             "form_health_mode": default_health_mode(KIND_STREAMLIT),
         },
@@ -541,6 +541,6 @@ def render_dialogs(repository: ToolRepository, settings: dict[str, str]) -> None
     elif dialog == "log":
         log_dialog(repository, settings)
     elif dialog == "port_stop":
-        port_stop_dialog(repository)
+        port_stop_dialog(repository, settings)
     elif dialog == "detect":
         detect_dialog(repository)
