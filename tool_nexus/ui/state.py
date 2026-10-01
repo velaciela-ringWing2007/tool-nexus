@@ -72,6 +72,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "health_checked_at": None,
     "health_checked_label": "",
     "force_check": False,
+    # TOOL NEXUS が起動したプロセスを探し直した起動（ツールID, last_started_at）。同じ起動は1回だけ探す（SPEC 6.4）
+    "relay_searched": set(),
     "flash": [],
     "sort_key": SORT_MANUAL,
     "collapsed_groups": [],
@@ -89,8 +91,8 @@ def get_repository() -> ToolRepository:
 
 def init_state() -> None:
     for key, value in DEFAULT_STATE.items():
-        # list / dict は複製する（同じオブジェクトを全セッションで共有しないように）
-        st.session_state.setdefault(key, value.copy() if isinstance(value, (list, dict)) else value)
+        # list / dict / set は複製する（同じオブジェクトを全セッションで共有しないように）
+        st.session_state.setdefault(key, value.copy() if isinstance(value, (list, dict, set)) else value)
 
 
 def toggle_group(group: str) -> None:

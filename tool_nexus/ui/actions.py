@@ -4,22 +4,30 @@ from __future__ import annotations
 
 import enum
 import time
+from dataclasses import replace
 from pathlib import Path
+from typing import Callable, Iterable
 
+from tool_nexus.core.constants import HEALTH_PROCESS, KIND_LINK
 from tool_nexus.core.models import Tool
 from tool_nexus.core.ports import is_port_free
 from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.process.control import (
     LaunchError,
     PidStatus,
+    ProcessInfo,
     ProcessNotIdentifiedError,
+    ProcessQueryError,
     StopError,
     append_log_marker,
+    find_relay_processes,
+    find_relayed,
     launch,
+    prepare_launch,
     resolve_log_path,
     stop,
 )
-from tool_nexus.process.health import ToolHealth, derive_status, probe_all
+from tool_nexus.process.health import ToolHealth, derive_status, expects_running, probe_all
 from tool_nexus.process.log_relay import stop_marker
 from tool_nexus.ui.grouping import StopSummary, should_start, should_stop
 from tool_nexus.ui.state import flash, health_timeout, request_check
@@ -37,6 +45,111 @@ def log_path_for(tool: Tool, settings: dict[str, str]) -> Path:
         default_log_dir=settings.get("default_log_dir", ""),
         tool_id=tool.id,
     )
+
+
+# ----------------------------------------------------------------------
+# TOOL NEXUS が起動したプロセスの探し直し（SPEC 6.3・6.4）
+# ----------------------------------------------------------------------
+RelayFinder = Callable[[], list[ProcessInfo]]
+
+
+def expected_launch(tool: Tool, settings: dict[str, str]) -> tuple[Path, list[str]] | None:
+    """登録内容から、起動するときと同じ手順で (ログファイル, argv) を組み立てる。組み立てられなければ None。"""
+    if tool.kind == KIND_LINK or tool.id is None:
+        return None
+    try:
+        argv, _ = prepare_launch(
+            command=tool.command, kind=tool.kind, port=tool.port, directory=tool.directory
+        )
+    except (LaunchError, ValueError):
+        return None
+    return log_path_for(tool, settings), argv
+
+
+def find_launched(
+    tools: Iterable[Tool], settings: dict[str, str], *, finder: RelayFinder = find_relay_processes
+) -> dict[int, ProcessInfo]:
+    """TOOL NEXUS が起動したプロセス（中継プロセス）を探し、{ツールID: プロセス} を返す。
+
+    プロセスの照会はまとめて1回。照会に失敗したときは何も見つからなかった扱いにする。
+    """
+    expected = {int(tool.id): e for tool in tools if (e := expected_launch(tool, settings)) is not None}
+    if not expected:
+        return {}
+    try:
+        relays = finder()
+    except ProcessQueryError:
+        return {}
+    found: dict[int, ProcessInfo] = {}
+    for tool_id, (log_path, argv) in expected.items():
+        process = find_relayed(relays, log_path=log_path, argv=argv)
+        if process is not None:
+            found[tool_id] = process
+    return found
+
+
+def adopt(repository: ToolRepository, tool: Tool, process: ProcessInfo) -> Tool:
+    """探し直したプロセスを、そのツールの PID として保存し直す。"""
+    repository.record_pid(int(tool.id), pid=process.pid, created_at=str(process.created_at))
+    return replace(tool, last_pid=process.pid, last_pid_created_at=process.created_at)
+
+
+def stop_with_rediscovery(
+    tool: Tool, *, stopper=stop, rediscover: Callable[[], ProcessInfo | None] = lambda: None
+) -> None:
+    """記録の PID で停止する。特定できなければ TOOL NEXUS が起動したプロセスを探し直して停止する。
+
+    探し直しても見つからなければ、最初の ProcessNotIdentifiedError をそのまま送出する。
+    """
+    try:
+        stopper(tool.last_pid, tool.last_pid_created_at)
+        return
+    except ProcessNotIdentifiedError:
+        found = rediscover()
+        if found is None:
+            raise
+    stopper(found.pid, found.created_at)
+
+
+def rediscoverer(
+    tool: Tool, settings: dict[str, str], *, finder: RelayFinder = find_relay_processes
+) -> Callable[[], ProcessInfo | None]:
+    """stop_with_rediscovery に渡す、1つのツールを探し直す関数。"""
+    return lambda: find_launched([tool], settings, finder=finder).get(int(tool.id))
+
+
+def rediscover_alive(
+    repository: ToolRepository,
+    settings: dict[str, str],
+    tools: list[Tool],
+    alive_by_id: dict[int, bool | None],
+    *,
+    searched: set[tuple[int, str]] | None = None,
+    finder: RelayFinder = find_relay_processes,
+) -> dict[int, Tool]:
+    """process モードで、起動したはずなのに生存が確認できないツールを探し直す（SPEC 6.4）。
+
+    見つかったものは alive_by_id を True にし、PID を保存し直す。{ツールID: 保存し直したツール} を返す。
+    searched に入っている起動（ツールID, last_started_at）は探さない。探したものは searched に足す。
+    """
+    candidates = [
+        tool
+        for tool in tools
+        if tool.health_mode == HEALTH_PROCESS
+        and alive_by_id.get(int(tool.id)) is False
+        and expects_running(tool)
+        and (searched is None or (int(tool.id), str(tool.last_started_at)) not in searched)
+    ]
+    if not candidates:
+        return {}
+    if searched is not None:
+        searched.update((int(tool.id), str(tool.last_started_at)) for tool in candidates)
+    by_id = {int(tool.id): tool for tool in candidates}
+    adopted: dict[int, Tool] = {}
+    for tool_id, process in find_launched(candidates, settings, finder=finder).items():
+        adopted[tool_id] = adopt(repository, by_id[tool_id], process)
+        alive_by_id[tool_id] = True
+    return adopted
 
 
 def mark_stopped(repository: ToolRepository, settings: dict[str, str], tool: Tool, reason: str = "停止") -> None:
@@ -64,11 +177,17 @@ def start_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool,
         flash(f"「{tool.name}」を起動できませんでした。{exc}", "error")
         return
 
-    repository.record_start(int(tool.id), pid=result.pid, created_at=result.created_at)
-    if result.created_at is None:
+    pid, created_at = result.pid, result.created_at
+    if created_at is None:
+        # 起動時刻を取れなかった。TOOL NEXUS が起動したプロセスとして探し直す（SPEC 6.2・6.3）
+        found = find_launched([tool], settings).get(int(tool.id))
+        if found is not None:
+            pid, created_at = found.pid, found.created_at
+    repository.record_start(int(tool.id), pid=pid, created_at=created_at)
+    if created_at is None:
         flash(
             f"「{tool.name}」を起動しましたが、プロセスの起動時刻を取得できませんでした。"
-            "安全のため、この起動は「停止」ボタンでは止められません。",
+            "状態の確認や停止のときに、改めてプロセスを探します。",
             "warning",
         )
     else:
@@ -90,7 +209,7 @@ def stop_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) 
     照合が取れず、ポートから引き直せる場合は False を返す（呼び出し側で確認ダイアログを開く）。
     """
     try:
-        stop(tool.last_pid, tool.last_pid_created_at)
+        stop_with_rediscovery(tool, rediscover=rediscoverer(tool, settings))
     except ProcessNotIdentifiedError as exc:
         if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
             # 記録しているプロセスはもう存在しない。古い記録は消しておく。
@@ -137,12 +256,16 @@ def stop_for_restart(
     tool: Tool,
     *,
     stopper=stop,
+    rediscover: Callable[[], ProcessInfo | None] = lambda: None,
     port_free=is_port_free,
     wait_released=wait_port_released,
 ) -> tuple[RestartOutcome, str]:
-    """再起動のために停止し、起動してよいかを返す（画面に依存しない。テスト用に差し替えられる）。"""
+    """再起動のために停止し、起動してよいかを返す（画面に依存しない。テスト用に差し替えられる）。
+
+    記録の PID で特定できなければ、TOOL NEXUS が起動したプロセスを探し直して停止する（SPEC 6.3）。
+    """
     try:
-        stopper(tool.last_pid, tool.last_pid_created_at)
+        stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscover)
     except ProcessNotIdentifiedError as exc:
         gone = exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH)
         if gone and (not tool.port or port_free(tool.port)):
@@ -157,7 +280,7 @@ def stop_for_restart(
 
 def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Tool) -> None:
     """停止して起動し直す。特定できないものは止めない（SPEC 6.3 再起動）。"""
-    outcome, detail = stop_for_restart(tool)
+    outcome, detail = stop_for_restart(tool, rediscover=rediscoverer(tool, settings))
     if outcome is RestartOutcome.STOPPED:
         mark_stopped(repository, settings, tool, "停止（再起動）")
         start_tool(repository, settings, tool, verb="再起動")
@@ -184,6 +307,8 @@ def restart_tool(repository: ToolRepository, settings: dict[str, str], tool: Too
 def current_health(repository: ToolRepository, settings: dict[str, str], tools: list[Tool]) -> list[ToolHealth]:
     """一覧の表示（フィルター・キャッシュ）に関係なく、今の状態を確認する。"""
     alive_by_id = probe_all(tools, timeout=health_timeout(settings))
+    adopted = rediscover_alive(repository, settings, tools, alive_by_id)
+    tools = [adopted.get(int(t.id), t) for t in tools]
     return [ToolHealth(t, alive_by_id.get(int(t.id)), derive_status(t, alive_by_id.get(int(t.id)))) for t in tools]
 
 
@@ -223,7 +348,12 @@ def start_group(repository: ToolRepository, settings: dict[str, str], group: str
 
 
 def stop_tools(
-    repository: ToolRepository, settings: dict[str, str], healths: list[ToolHealth], *, stopper=stop
+    repository: ToolRepository,
+    settings: dict[str, str],
+    healths: list[ToolHealth],
+    *,
+    stopper=stop,
+    finder: RelayFinder = find_relay_processes,
 ) -> StopSummary:
     """起動中のものを停止する。特定できないものは止めずに summary.not_identified に入れる。
 
@@ -235,7 +365,7 @@ def stop_tools(
         if not should_stop(health):
             continue
         try:
-            stopper(tool.last_pid, tool.last_pid_created_at)
+            stop_with_rediscovery(tool, stopper=stopper, rediscover=rediscoverer(tool, settings, finder=finder))
         except ProcessNotIdentifiedError as exc:
             if exc.status in (PidStatus.NOT_FOUND, PidStatus.MISMATCH):
                 repository.clear_pid(int(tool.id))

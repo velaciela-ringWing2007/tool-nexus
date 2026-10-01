@@ -112,6 +112,26 @@ class TestSnapshot:
         assert len(runner.calls) == 1 and "Get-NetTCPConnection" in runner.calls[0][0][-1]
 
 
+class TestFindRelayProcesses:
+    def test_queries_relays_only(self) -> None:
+        # 中継プロセスだけを PowerShell 1回で照会する（SPEC 6.3 探し直し）
+        text = json.dumps({"processes": [
+            {"pid": 20, "ppid": 1, "name": "python.exe",
+             "cmd": 'C:\\Python\\python.exe C:\\tn\\log_relay.py --log C:\\l\\a.log -- C:\\p\\python.exe a.py',
+             "created": "2026-10-01T13:09:37.1234567+09:00"},
+        ], "listeners": []})
+        runner = FakeRunner(stdout=text)
+        found = os_windows.find_relay_processes(runner=runner)
+        assert [(p.pid, p.created_at) for p in found] == [(20, "2026-10-01T13:09:37+09:00")]
+        script = runner.calls[0][0][-1]
+        assert len(runner.calls) == 1
+        assert "CommandLine LIKE '%log[_]relay.py%'" in script  # _ は WQL の任意の1文字なので [_] にする
+        assert "Get-NetTCPConnection" not in script
+
+    def test_none_found(self) -> None:
+        assert os_windows.find_relay_processes(runner=FakeRunner(stdout='{"processes":[],"listeners":[]}')) == []
+
+
 class TestDialogs:
     def test_pick_file(self, tmp_path: Path) -> None:
         runner = FakeRunner(stdout=f"{tmp_path}\\app.py\r\n")

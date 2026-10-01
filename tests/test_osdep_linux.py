@@ -144,6 +144,18 @@ class TestSnapshot:
         assert os_linux.parse_net_tcp(text) == {0x2135: {5555}}
 
 
+class TestFindRelayProcesses:
+    def test_only_relays(self, proc: FakeProc) -> None:
+        # TOOL NEXUS が起動したツールの中継プロセスだけを返す（SPEC 6.3 探し直し）
+        proc.add(1, 0, ["/sbin/init"])
+        proc.add(800, 1, ["/usr/bin/python3", "/opt/tn/tool_nexus/process/log_relay.py", "--log", "/l/a.log",
+                          "--", "/p/.venv/bin/python", "a.py"], starttime=700)
+        proc.add(801, 800, ["/p/.venv/bin/python", "a.py"])
+        found = os_linux.find_relay_processes(proc.root, clk_tck=CLK)
+        assert [p.pid for p in found] == [800]
+        assert found[0].created_at == created(700)
+
+
 class TestKillTree:
     def test_term_then_kill_remaining(self, proc: FakeProc) -> None:
         proc.add(100, 1, ["python", "-m", "streamlit"])

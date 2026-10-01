@@ -189,6 +189,12 @@ def read_processes(proc_root: Path = PROC, *, clk_tck: int | None = None) -> dic
     return processes
 
 
+def find_relay_processes(proc_root: Path = PROC, *, clk_tck: int | None = None) -> list[ProcessInfo]:
+    """コマンドラインに log_relay.py を含むプロセスを返す（TOOL NEXUS が起動したツールの中継プロセス。SPEC 6.3）。"""
+    processes = read_processes(proc_root, clk_tck=clk_tck)
+    return [process for process in processes.values() if "log_relay.py" in process.command_line]
+
+
 def parse_net_tcp(text: str) -> dict[int, set[int]]:
     """/proc/net/tcp(6) から LISTEN 中の {ポート: {inode}} を返す。"""
     result: dict[int, set[int]] = {}

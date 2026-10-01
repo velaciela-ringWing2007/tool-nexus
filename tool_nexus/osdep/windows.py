@@ -202,6 +202,21 @@ def take_snapshot(*, runner: Runner = subprocess.run) -> Snapshot:
     return parse_snapshot(run_powershell(_SNAPSHOT_SCRIPT, runner=runner, timeout=SNAPSHOT_TIMEOUT))
 
 
+# ログの中継プロセスだけを取得する（SPEC 6.3 探し直し）。WQL の LIKE では _ が1文字の任意を表すため [_] と書く
+_RELAY_SCRIPT = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+    "$procs = foreach ($p in Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%log[_]relay.py%'\") { "
+    "[pscustomobject]@{ pid=$p.ProcessId; ppid=$p.ParentProcessId; name=$p.Name; cmd=$p.CommandLine; "
+    "created=$(if ($p.CreationDate) { $p.CreationDate.ToString('o') } else { $null }) } }; "
+    "[pscustomobject]@{ processes=@($procs); listeners=@() } | ConvertTo-Json -Depth 3 -Compress"
+)
+
+
+def find_relay_processes(*, runner: Runner = subprocess.run) -> list[ProcessInfo]:
+    """コマンドラインに log_relay.py を含むプロセスを返す（TOOL NEXUS が起動したツールの中継プロセス）。"""
+    return list(parse_snapshot(run_powershell(_RELAY_SCRIPT, runner=runner)).processes.values())
+
+
 # ----------------------------------------------------------------------
 # ファイル選択（Windows Forms）
 # ----------------------------------------------------------------------

@@ -198,6 +198,15 @@ def link_status(tool: Tool) -> Status:
     return Status.MISSING
 
 
+def expects_running(tool: Tool) -> bool:
+    """起動の記録があり、その後に停止の記録が無いか（起動したはずのツールか）。"""
+    started = _parse(tool.last_started_at)
+    if started is None:
+        return False
+    stopped = _parse(tool.last_stopped_at)
+    return stopped is None or stopped < started
+
+
 def derive_status(tool: Tool, alive: bool | None, *, now: datetime | None = None) -> Status:
     """生存確認の結果と起動記録から、表示用の状態を求める。
 

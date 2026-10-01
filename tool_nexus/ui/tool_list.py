@@ -14,7 +14,7 @@ from tool_nexus.core.repositories import ToolRepository
 from tool_nexus.core.settings import parse_interval
 from tool_nexus.process.health import Status, ToolHealth, derive_status, is_check_due, probe_all
 from tool_nexus.process.link_server import link_url
-from tool_nexus.ui.actions import restart_tool, start_group, start_tool, stop_group, stop_tool
+from tool_nexus.ui.actions import rediscover_alive, restart_tool, start_group, start_tool, stop_group, stop_tool
 from tool_nexus.ui.grouping import group_healths, sort_healths
 from tool_nexus.ui.state import (
     KIND_ALL,
@@ -180,7 +180,12 @@ def check_tools(
     if not due:
         return cached
 
+    searched: set[tuple[int, str]] = st.session_state["relay_searched"]
+    if st.session_state["force_check"]:
+        searched.clear()  # 再チェック・起動・停止の直後は探し直す
     alive_by_id = probe_all(tools, timeout=health_timeout(settings))
+    adopted = rediscover_alive(repository, settings, tools, alive_by_id, searched=searched)
+    tools = [adopted.get(int(t.id), t) for t in tools]
     st.session_state["force_check"] = False
     st.session_state["health_checked_at"] = time.monotonic()
     st.session_state["health_checked_label"] = f"{datetime.now():%H:%M:%S}"

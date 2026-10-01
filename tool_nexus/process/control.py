@@ -34,13 +34,14 @@ from tool_nexus.process.base import (
     StopError,
     normalize_creation_date,
 )
-from tool_nexus.process.log_relay import LOG_OPTION, RELAY_SEPARATOR, unwrap_command
+from tool_nexus.process.log_relay import LOG_OPTION, RELAY_SEPARATOR, parse_args, unwrap_command
 
 # process.base の例外・型も、呼び出し側はこのモジュールから import できる
 __all__ = [
     "CreationDateLookup", "DetectedTool", "LaunchError", "LaunchResult", "PidStatus",
     "ProcessInfo", "ProcessNotIdentifiedError", "ProcessQueryError", "Snapshot", "StopError",
-    "ancestors", "build_argv", "detect_streamlit", "find_port_owner", "get_creation_dates",
+    "ancestors", "build_argv", "detect_streamlit", "find_port_owner", "find_relay_processes",
+    "find_relayed", "get_creation_dates", "parse_relay_command",
     "get_process_creation_date", "guess_directory", "is_launcher_name", "launch",
     "normalize_creation_date", "prepare_launch", "read_log_tail", "resolve_executable",
     "resolve_log_path", "root_process", "split_command", "stop", "take_snapshot", "verify_pid",
@@ -50,6 +51,7 @@ __all__ = [
 get_process_creation_date = osdep.get_process_creation_date
 get_creation_dates = osdep.get_creation_dates
 take_snapshot = osdep.take_snapshot
+find_relay_processes = osdep.find_relay_processes
 
 
 # ----------------------------------------------------------------------
@@ -481,6 +483,51 @@ def tool_command(command_line: str) -> str:
     if inner is None:
         return command_line
     return " ".join(f'"{arg}"' if any(ch.isspace() for ch in arg) else arg for arg in inner)
+
+
+# ----------------------------------------------------------------------
+# TOOL NEXUS が起動したプロセスの探し直し（SPEC 6.3）
+# ----------------------------------------------------------------------
+def parse_relay_command(command_line: str) -> tuple[str, list[str]] | None:
+    """中継プロセスのコマンドラインを (ログファイル, ツールの argv) に分ける。中継プロセスでなければ None。"""
+    try:
+        argv = split_command(command_line)
+    except ValueError:
+        return None
+    for index, arg in enumerate(argv[:3]):
+        if os.path.basename(arg) == RELAY_SCRIPT.name:
+            try:
+                return parse_args(argv[index + 1:])
+            except SystemExit:
+                return None
+    return None
+
+
+def _same(left: str, right: str) -> bool:
+    """パスや引数が同じか（Windows は大文字小文字と区切り文字の違いを無視する）。"""
+    return os.path.normcase(left) == os.path.normcase(right)
+
+
+def find_relayed(
+    processes: Iterable[ProcessInfo], *, log_path: Path, argv: list[str]
+) -> ProcessInfo | None:
+    """ログファイルと argv の両方が一致する中継プロセスを返す。ちょうど1つに決まらなければ None。
+
+    venv のリダイレクタ越しに中継プロセスが動いた場合は同じコマンドラインの親子になるため、最上位だけを残す。
+    """
+    matches: dict[int, ProcessInfo] = {}
+    for process in processes:
+        parsed = parse_relay_command(process.command_line) if process.created_at else None
+        if parsed is None:
+            continue
+        relay_log, relay_args = parsed
+        if not _same(os.path.normpath(relay_log), os.path.normpath(str(log_path))):
+            continue
+        if len(relay_args) != len(argv) or not all(_same(a, b) for a, b in zip(relay_args, argv)):
+            continue
+        matches[process.pid] = process
+    roots = [process for process in matches.values() if process.ppid not in matches]
+    return roots[0] if len(roots) == 1 else None
 
 
 def detect_streamlit(

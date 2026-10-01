@@ -28,5 +28,6 @@ get_process_creation_date = _impl.get_process_creation_date
 get_creation_dates = _impl.get_creation_dates
 kill_tree = _impl.kill_tree
 take_snapshot = _impl.take_snapshot
+find_relay_processes = _impl.find_relay_processes
 pick_file = _impl.pick_file
 pick_folder = _impl.pick_folder

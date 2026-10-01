@@ -247,6 +247,13 @@ class ToolRepository:
             (*pair, now_iso_precise(), tool_id),
         )
 
+    def record_pid(self, tool_id: int, *, pid: int, created_at: str) -> None:
+        """探し直したプロセスの PID と起動時刻を保存し直す（起動の記録は変えない。SPEC 6.3）。"""
+        self._execute_update(
+            "UPDATE tools SET last_pid = ?, last_pid_created_at = ? WHERE id = ?",
+            (pid, created_at, tool_id),
+        )
+
     def clear_pid(self, tool_id: int) -> None:
         """停止後などに、PIDと起動時刻を対で消去する。"""
         self._execute_update(
