@@ -122,7 +122,10 @@ class TestFindRelayProcesses:
         ], "listeners": []})
         runner = FakeRunner(stdout=text)
         found = os_windows.find_relay_processes(runner=runner)
-        assert [(p.pid, p.created_at) for p in found] == [(20, "2026-10-01T13:09:37+09:00")]
+        # 起動時刻は実行環境のタイムゾーンで正規化される（CI は UTC）
+        assert [(p.pid, p.created_at) for p in found] == [
+            (20, normalize_creation_date("2026-10-01T13:09:37.1234567+09:00"))
+        ]
         script = runner.calls[0][0][-1]
         assert len(runner.calls) == 1
         assert "CommandLine LIKE '%log[_]relay.py%'" in script  # _ は WQL の任意の1文字なので [_] にする
