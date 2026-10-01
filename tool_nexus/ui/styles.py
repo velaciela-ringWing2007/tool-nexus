@@ -25,6 +25,8 @@ COLOR_TEXT = "#dbe6ff"
 COLOR_MUTED = "#8fa0c0"
 COLOR_WARN = "#fbbf24"
 COLOR_DANGER = "#f87171"
+# リンクの印。信号の意味（緑・黄・赤）で読まれない色にする（SPEC 6.10）
+COLOR_LINK = "#a78bfa"
 
 _CSS = f"""
 <style>
@@ -38,6 +40,7 @@ _CSS = f"""
     --tn-muted: {COLOR_MUTED};
     --tn-warn: {COLOR_WARN};
     --tn-danger: {COLOR_DANGER};
+    --tn-link: {COLOR_LINK};
     --tn-border: rgba(34, 211, 238, 0.28);
 }}
 
@@ -288,8 +291,8 @@ _CSS = f"""
     opacity: 1;
 }}
 .tn-dot--link {{
-    background: var(--tn-accent-sub);
-    opacity: 0.9;
+    background: var(--tn-link);
+    opacity: 1;
     border-radius: 2px;
 }}
 .tn-dot--missing {{
@@ -300,6 +303,23 @@ _CSS = f"""
 .tn-dot--unknown {{
     background: transparent;
     border: 1px solid var(--tn-muted);
+}}
+/* ---------- 左ナビの凡例 ---------- */
+.tn-legend {{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 0.78rem;
+    color: var(--tn-muted);
+}}
+.tn-legend li {{
+    cursor: help;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.3rem 0;
+    padding: 0;
+    line-height: 1.3;
 }}
 @keyframes tn-pulse {{
     0%, 100% {{ opacity: 1; }}
@@ -463,6 +483,18 @@ def status_dot(status: str, label: str) -> str:
         f'<span class="tn-dot tn-dot--{escape_html(status)}" '
         f'title="{escape_html(label)}"></span>'
     )
+
+
+def render_status_legend(entries: Iterable[tuple[str, str, str]]) -> None:
+    """左ナビの凡例（印と意味の一覧）を1つのHTMLで描画する（0ウィジェット。SPEC 8.1）。
+
+    entries は (health.Status の値, 短い文言, マウスを載せたときの説明) の並び。
+    """
+    items = "".join(
+        f'<li title="{escape_html(detail)}">{status_dot(status, text)}<span>{escape_html(text)}</span></li>'
+        for status, text, detail in entries
+    )
+    st.markdown(f'<ul class="tn-legend">{items}</ul>', unsafe_allow_html=True)
 
 
 def render_tool_summary(

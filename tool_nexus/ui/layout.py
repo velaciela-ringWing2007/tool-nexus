@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from tool_nexus.core.repositories import ToolRepository
+from tool_nexus.process.health import Status
 from tool_nexus.ui.actions import start_autostart_tools
 from tool_nexus.ui.grouping import SORT_OPTIONS
 from tool_nexus.ui.state import (
@@ -15,7 +16,19 @@ from tool_nexus.ui.state import (
     open_dialog,
     select_kind,
 )
-from tool_nexus.ui.styles import render_app_bar
+from tool_nexus.ui.styles import render_app_bar, render_status_legend
+
+# 左ナビの凡例（SPEC 8.1）。表示用の状態（SPEC 6.4）をすべて載せる。
+# 左ナビは狭いので文言は短くし、詳しい説明はマウスを載せたときに出す
+STATUS_LEGEND: tuple[tuple[Status, str, str], ...] = (
+    (Status.RUNNING, "起動中", "動いています（ヘルスチェックが通っています）"),
+    (Status.STARTING, "起動中…", "起動から30秒以内。ヘルスチェックが通るのを待っています"),
+    (Status.FAILED, "起動失敗？", "起動から10分以内で、一度もヘルスチェックが通っていません。ログを確認してください"),
+    (Status.STOPPED, "停止", "止まっています"),
+    (Status.UNKNOWN, "不明", "監視しない設定か、状態を照会できませんでした"),
+    (Status.LINK, "リンク", "URL やローカルのファイル（起動はしません）"),
+    (Status.MISSING, "リンク切れ", "リンク先のファイル／フォルダが見つかりません"),
+)
 
 
 def render_top_bar() -> None:
@@ -63,6 +76,8 @@ def render_side_nav(repository: ToolRepository) -> None:
             label_visibility="collapsed",
             help="グループの中の並び順。手動の表示順は設定の「ツールの管理」で変えられます。",
         )
+        st.markdown("### 凡例")
+        render_status_legend((status.value, text, detail) for status, text, detail in STATUS_LEGEND)
         st.markdown("---")
         st.caption(f"登録 {repository.count()} 件")
 
